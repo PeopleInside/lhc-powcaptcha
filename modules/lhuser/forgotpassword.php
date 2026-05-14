@@ -52,8 +52,7 @@ if (isset($_POST['Forgotpassword'])) {
         $Errors[] = erTranslationClassLhTranslation::getInstance()->getTranslation('user/forgotpassword', 'Invalid e-mail address!');
     }
 
-    $captchaSettings = \LiveHelperChat\Validators\CaptchaValidator::getCaptchaSettings();
-    if ((int)$captchaSettings['enabled'] === 1 && $captchaSettings['provider'] === 'pow') {
+    if (erLhcoreClassPowCaptcha::isPowEnabled()) {
         $powReason = null;
         if (!erLhcoreClassPowCaptcha::verifySubmittedProof($_POST, 'forgot_password_action', $powReason)) {
             $Errors[] = erTranslationClassLhTranslation::getInstance()->getTranslation('user/login', 'Captcha validation failed');
