@@ -15,8 +15,8 @@ class erLhcoreClassPowCaptcha
         $settings = array();
         $rcData = erLhcoreClassModelChatConfig::fetch('recaptcha_data');
 
-        if ($rcData instanceof erLhcoreClassModelChatConfig && is_array($rcData->data)) {
-            $settings = $rcData->data;
+        if ($rcData instanceof erLhcoreClassModelChatConfig && is_array($rcData->data_value)) {
+            $settings = $rcData->data_value;
         }
 
         if (empty($settings)) {
