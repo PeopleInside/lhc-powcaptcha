@@ -12,7 +12,27 @@ class erLhcoreClassPowCaptcha
 
     public static function getRecaptchaSettings(): array
     {
-        $settings = \LiveHelperChat\Validators\CaptchaValidator::getCaptchaSettings();
+        $settings = array();
+        $rcData = erLhcoreClassModelChatConfig::fetch('recaptcha_data');
+
+        if ($rcData instanceof erLhcoreClassModelChatConfig && is_array($rcData->data)) {
+            $settings = $rcData->data;
+        }
+
+        if (empty($settings)) {
+            $settings = \LiveHelperChat\Validators\CaptchaValidator::getCaptchaSettings();
+        }
+
+        $settings['provider'] = isset($settings['provider']) ? (string)$settings['provider'] : 'google';
+        if (!in_array($settings['provider'], array('google', 'turnstile', 'pow'), true)) {
+            $settings['provider'] = 'google';
+        }
+
+        $settings['enabled'] = (isset($settings['enabled']) && (int)$settings['enabled'] === 1) ? 1 : 0;
+        $settings['site_key'] = isset($settings['site_key']) ? (string)$settings['site_key'] : '';
+        $settings['secret_key'] = isset($settings['secret_key']) ? (string)$settings['secret_key'] : '';
+        $settings['turnstile_site_key'] = isset($settings['turnstile_site_key']) ? (string)$settings['turnstile_site_key'] : '';
+        $settings['turnstile_secret_key'] = isset($settings['turnstile_secret_key']) ? (string)$settings['turnstile_secret_key'] : '';
 
         $settings['pow_difficulty'] = isset($settings['pow_difficulty']) ? (int)$settings['pow_difficulty'] : self::DEFAULT_DIFFICULTY;
         $settings['pow_ttl'] = isset($settings['pow_ttl']) ? (int)$settings['pow_ttl'] : self::DEFAULT_TTL;
