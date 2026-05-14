@@ -52,6 +52,14 @@ array(
 
 6. Save.
 
+## Extension structure used by LHC
+
+Live Helper Chat loads extension template overrides from:
+
+- `extension/lhcpowcaptcha/design/lhcpowcaptchatheme/tpl/...`
+
+If templates are placed under `design/defaulttheme/...`, LHC will not load the PoW overrides from the extension.
+
 ## Core page integration (important)
 
 This extension is designed to integrate directly into the core page:
@@ -70,8 +78,8 @@ Manage PoW only from: `site_admin/system/recaptcha`.
 3. Clear Live Helper Chat cache from back office.
 4. Reset PHP OPcache (or restart PHP-FPM/Apache service).
 5. Check for conflicts:
-   - another extension overriding `modules/lhsystem/recaptcha.php`
-   - another extension/theme overriding `design/defaulttheme/tpl/lhsystem/recaptcha.tpl.php`
+    - another extension overriding `modules/lhsystem/recaptcha.php`
+    - another extension/theme overriding `extension/lhcpowcaptcha/design/lhcpowcaptchatheme/tpl/lhsystem/recaptcha.tpl.php`
 6. Reopen `site_admin/system/recaptcha` and verify provider list contains:
    - `Local PoW captcha`
 7. If provider is still missing, extension override is not active.
