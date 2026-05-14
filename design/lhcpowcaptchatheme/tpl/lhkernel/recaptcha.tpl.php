@@ -62,23 +62,31 @@
                 if (!statusEl) {
                     return;
                 }
-                msgEl.textContent = message;
+                if (msgEl) {
+                    msgEl.textContent = message;
+                }
                 statusEl.className = 'mt-2 small';
                 if (state === 'success') {
                     statusEl.classList.add('text-success');
-                    iconEl.className = '';
-                    iconEl.textContent = '✓';
-                    iconEl.style.cssText = 'font-size:1.15em;display:inline-block;flex-shrink:0;animation:pow-pop .35s cubic-bezier(.175,.885,.32,1.275) both';
+                    if (iconEl) {
+                        iconEl.className = '';
+                        iconEl.textContent = '✓';
+                        iconEl.style.cssText = 'font-size:1.15em;display:inline-block;flex-shrink:0;animation:pow-pop .35s cubic-bezier(.175,.885,.32,1.275) both';
+                    }
                 } else if (state === 'error') {
                     statusEl.classList.add('text-danger');
-                    iconEl.className = '';
-                    iconEl.textContent = '✕';
-                    iconEl.style.cssText = 'font-size:1.15em;display:inline-block;flex-shrink:0;animation:pow-shake .4s ease-out both';
+                    if (iconEl) {
+                        iconEl.className = '';
+                        iconEl.textContent = '✕';
+                        iconEl.style.cssText = 'font-size:1.15em;display:inline-block;flex-shrink:0;animation:pow-shake .4s ease-out both';
+                    }
                 } else {
                     statusEl.classList.add('text-muted');
-                    iconEl.className = 'pow-spinner';
-                    iconEl.textContent = '';
-                    iconEl.style.cssText = '';
+                    if (iconEl) {
+                        iconEl.className = 'pow-spinner';
+                        iconEl.textContent = '';
+                        iconEl.style.cssText = '';
+                    }
                 }
             }
 
@@ -170,7 +178,22 @@
             }
 
             form.addEventListener('submit', async function (e) {
+                // Capture the button that triggered the submit synchronously, before
+                // any async work, since document.activeElement may change afterwards.
+                var submitBtn = (document.activeElement && document.activeElement.form === form && document.activeElement.type === 'submit')
+                    ? document.activeElement
+                    : form.querySelector('[type="submit"]');
+
                 if (isSolvedAndFresh()) {
+                    // Kick off a fresh solve immediately (after the browser captures the
+                    // current form data) so that any retry — e.g. after a wrong password
+                    // in an AJAX-mode login — gets a brand-new proof instead of hitting
+                    // the server-side replay-detection check.
+                    setTimeout(function () {
+                        solvePromise = fetchAndSolve().catch(function () {
+                            setStatus(MSG_FAILED, 'error');
+                        });
+                    }, 0);
                     return;
                 }
 
@@ -194,6 +217,18 @@
                     }
 
                     setStatus(MSG_SUBMITTING, 'success');
+
+                    // form.submit() does not include the active submit button value in the
+                    // POST data; add it as a hidden field so the server can identify which
+                    // action was triggered (e.g. $_POST['Login']).
+                    var hiddenBtn = null;
+                    if (submitBtn && submitBtn.name) {
+                        hiddenBtn = document.createElement('input');
+                        hiddenBtn.type = 'hidden';
+                        hiddenBtn.name = submitBtn.name;
+                        hiddenBtn.value = submitBtn.value;
+                        form.appendChild(hiddenBtn);
+                    }
                     form.submit();
                 } catch (err) {
                     setStatus(MSG_FAILED, 'error');
