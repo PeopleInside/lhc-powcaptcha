@@ -13,7 +13,15 @@ class erLhcoreClassExtensionLhcpowcaptcha
 
     public function registerAutoload()
     {
+        spl_autoload_register(array($this, 'autoloadExt'), true, true);
         spl_autoload_register(array($this, 'autoload'), true, false);
+    }
+
+    public function autoloadExt($className)
+    {
+        if ($className === 'LiveHelperChat\\Validators\\CaptchaValidator') {
+            include_once 'extension/lhcpowcaptcha/classes/CaptchaValidator.php';
+        }
     }
 
     public function autoload($className)
