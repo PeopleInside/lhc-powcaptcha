@@ -109,8 +109,7 @@ if (isset($_POST['Login']))
 
         $valid = true;
 
-        $captchaSettings = \LiveHelperChat\Validators\CaptchaValidator::getCaptchaSettings();
-        if ((int)$captchaSettings['enabled'] === 1 && $captchaSettings['provider'] === 'pow') {
+        if (erLhcoreClassPowCaptcha::isPowEnabled()) {
             $powReason = null;
             if (!erLhcoreClassPowCaptcha::verifySubmittedProof($_POST, 'login_action', $powReason)) {
                 $valid = false;

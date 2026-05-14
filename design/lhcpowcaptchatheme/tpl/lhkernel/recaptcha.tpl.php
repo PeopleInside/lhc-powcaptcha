@@ -24,7 +24,7 @@
     <input type="hidden" name="pow_nonce" value="">
 
     <div class="mt-2 text-muted small" data-powcaptcha-status>
-        <?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('user/login','PoW captcha is prepared on submit.');?>
+        <?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('user/login','Verifying captcha...');?>
     </div>
 
     <script>
@@ -38,13 +38,35 @@
             var nonceInput = form.querySelector('input[name="pow_nonce"]');
             var statusEl = form.querySelector('[data-powcaptcha-status]');
 
-            var inProgress = false;
-            var solvedForCurrentChallenge = false;
+            var solvePromise = null;
+            var challengeExpiresAt = 0;
 
-            function setStatus(message) {
-                if (statusEl) {
-                    statusEl.textContent = message;
+            var MSG_PREPARING  = <?php echo json_encode(erTranslationClassLhTranslation::getInstance()->getTranslation('user/login', 'Verifying captcha...'));?>;
+            var MSG_SOLVING    = <?php echo json_encode(erTranslationClassLhTranslation::getInstance()->getTranslation('user/login', 'Solving captcha challenge...'));?>;
+            var MSG_VERIFIED   = <?php echo json_encode(erTranslationClassLhTranslation::getInstance()->getTranslation('user/login', 'Captcha verified.'));?>;
+            var MSG_SUBMITTING = <?php echo json_encode(erTranslationClassLhTranslation::getInstance()->getTranslation('user/login', 'Captcha verified. Submitting...'));?>;
+            var MSG_NO_CRYPTO  = <?php echo json_encode(erTranslationClassLhTranslation::getInstance()->getTranslation('user/login', 'PoW captcha requires a modern browser with cryptography support.'));?>;
+            var MSG_FAILED     = <?php echo json_encode(erTranslationClassLhTranslation::getInstance()->getTranslation('user/login', 'Captcha verification failed. Please try again.'));?>;
+
+            function setStatus(message, state) {
+                if (!statusEl) {
+                    return;
                 }
+                statusEl.textContent = message;
+                statusEl.className = 'mt-2 small';
+                if (state === 'success') {
+                    statusEl.classList.add('text-success');
+                } else if (state === 'error') {
+                    statusEl.classList.add('text-danger');
+                } else {
+                    statusEl.classList.add('text-muted');
+                }
+            }
+
+            function isSolvedAndFresh() {
+                return challengeInput.value !== '' &&
+                    nonceInput.value !== '' &&
+                    Math.floor(Date.now() / 1000) < challengeExpiresAt - 30;
             }
 
             function hasLeadingZeroBits(hexHash, requiredBits) {
@@ -86,52 +108,76 @@
                 }
             }
 
+            async function fetchAndSolve() {
+                challengeInput.value = '';
+                nonceInput.value = '';
+                challengeExpiresAt = 0;
+
+                setStatus(MSG_PREPARING);
+
+                var response = await fetch('<?php echo erLhcoreClassDesign::baseurl('powcaptcha/challenge')?>/<?php echo rawurlencode($captchaAction)?>', {
+                    method: 'GET',
+                    credentials: 'same-origin',
+                    headers: {'Accept': 'application/json'}
+                });
+
+                if (!response.ok) {
+                    throw new Error('challenge_request_failed');
+                }
+
+                var challengeData = await response.json();
+                if (!challengeData.challenge || !challengeData.difficulty) {
+                    throw new Error('challenge_payload_invalid');
+                }
+
+                challengeExpiresAt = Math.floor(Date.now() / 1000) + parseInt(challengeData.expires_in, 10);
+
+                setStatus(MSG_SOLVING);
+
+                var nonce = await solvePow(challengeData.challenge, parseInt(challengeData.difficulty, 10));
+
+                challengeInput.value = challengeData.challenge;
+                nonceInput.value = nonce;
+
+                setStatus(MSG_VERIFIED, 'success');
+            }
+
+            if (!window.crypto || !window.crypto.subtle || !window.TextEncoder) {
+                setStatus(MSG_NO_CRYPTO, 'error');
+            } else {
+                solvePromise = fetchAndSolve().catch(function () {
+                    setStatus(MSG_FAILED, 'error');
+                });
+            }
+
             form.addEventListener('submit', async function (e) {
-                if (solvedForCurrentChallenge === true || inProgress === true) {
+                if (isSolvedAndFresh()) {
                     return;
                 }
 
                 e.preventDefault();
-                inProgress = true;
 
                 if (!window.crypto || !window.crypto.subtle || !window.TextEncoder) {
-                    setStatus('PoW captcha requires modern browser cryptography support.');
-                    inProgress = false;
+                    setStatus(MSG_NO_CRYPTO, 'error');
                     return;
                 }
 
                 try {
-                    setStatus('Preparing PoW challenge...');
-                    var response = await fetch('<?php echo erLhcoreClassDesign::baseurl('powcaptcha/challenge')?>/<?php echo rawurlencode($captchaAction)?>', {
-                        method: 'GET',
-                        credentials: 'same-origin',
-                        headers: {
-                            'Accept': 'application/json'
-                        }
-                    });
-
-                    if (!response.ok) {
-                        throw new Error('challenge_request_failed');
+                    // Await the background solve only while the fetched challenge is still fresh
+                    if (solvePromise !== null && Math.floor(Date.now() / 1000) < challengeExpiresAt - 30) {
+                        await solvePromise;
                     }
 
-                    var challengeData = await response.json();
-                    if (!challengeData.challenge || !challengeData.difficulty) {
-                        throw new Error('challenge_payload_invalid');
+                    // If still not solved (background solve failed or challenge expired), solve fresh
+                    if (!isSolvedAndFresh()) {
+                        solvePromise = fetchAndSolve();
+                        await solvePromise;
                     }
 
-                    setStatus('Solving PoW captcha...');
-                    var nonce = await solvePow(challengeData.challenge, parseInt(challengeData.difficulty, 10));
-
-                    challengeInput.value = challengeData.challenge;
-                    nonceInput.value = nonce;
-                    solvedForCurrentChallenge = true;
-
-                    setStatus('PoW captcha solved. Submitting...');
+                    setStatus(MSG_SUBMITTING, 'success');
                     form.submit();
                 } catch (err) {
-                    setStatus('Failed to solve PoW captcha. Please try again.');
-                } finally {
-                    inProgress = false;
+                    setStatus(MSG_FAILED, 'error');
                 }
             });
         })();
