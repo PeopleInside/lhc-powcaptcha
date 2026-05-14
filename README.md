@@ -5,8 +5,6 @@ A Live Helper Chat extension that adds a **local Proof-of-Work (PoW) captcha** o
 - Admin login (`user/login`)
 - Password reminder (`user/forgotpassword`)
 
-Designed for **Live Helper Chat 4.85v**.
-
 ## What this extension changes
 
 This extension adds a new captcha provider in `site_admin/system/recaptcha`:
@@ -20,14 +18,20 @@ When selected and enabled, LHC will:
 - Verify PoW server-side before login/password-reminder processing
 - Reject replayed proofs (session-level replay protection)
 
-## Installation (LHC 4.85v)
+## Disclaimer
 
+This software is provided **"AS IS"**, without any warranty. While it has been tested and reasonable efforts are made to ensure security and reliability, no guarantees are provided. As an open project, anyone may contribute or report issues, but this does not imply endorsement or liability from the maintainers.
+
+**You use this software entirely at your own risk.** The authors and contributors are not liable for any damages, data loss, or unexpected behavior resulting from its use, modification, or distribution. Always review and test the code independently before deploying it in critical or production environments.
+
+## Installation
 1. Copy extension folder into LHC:
 
 ```bash
 cd /path/to/lhc_web/extension
 git clone https://github.com/PeopleInside/lhc-powcaptcha.git lhcpowcaptcha
 ```
+If you use FTP be sure to rename the folder from `lhc-powcaptcha` to `lhcpowcaptcha`
 
 2. Enable extension in `lhc_web/settings/settings.ini.php`:
 
