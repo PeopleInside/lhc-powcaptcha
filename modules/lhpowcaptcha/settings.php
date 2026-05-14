@@ -1,5 +1,8 @@
 <?php
 
+erLhcoreClassModule::redirect('system/recaptcha');
+exit;
+
 $tpl = erLhcoreClassTemplate::getInstance('lhpowcaptcha/settings.tpl.php');
 
 $currentUser = erLhcoreClassUser::instance();
