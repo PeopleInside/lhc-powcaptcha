@@ -66,12 +66,12 @@
 
         <div class="form-group">
             <label><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Difficulty (12-26 leading zero bits)');?></label>
-            <input type="number" min="12" max="26" step="1" class="form-control" name="pow_difficulty" value="<?php isset($rc_data['pow_difficulty']) ? print (int)$rc_data['pow_difficulty'] : 18?>" />
+            <input type="number" min="12" max="26" step="1" class="form-control" name="pow_difficulty" value="<?php echo isset($rc_data['pow_difficulty']) ? (int)$rc_data['pow_difficulty'] : 18?>" />
         </div>
 
         <div class="form-group">
             <label><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Challenge TTL in seconds (60-600)');?></label>
-            <input type="number" min="60" max="600" step="1" class="form-control" name="pow_ttl" value="<?php isset($rc_data['pow_ttl']) ? print (int)$rc_data['pow_ttl'] : 180?>" />
+            <input type="number" min="60" max="600" step="1" class="form-control" name="pow_ttl" value="<?php echo isset($rc_data['pow_ttl']) ? (int)$rc_data['pow_ttl'] : 180?>" />
         </div>
     </div>
 
