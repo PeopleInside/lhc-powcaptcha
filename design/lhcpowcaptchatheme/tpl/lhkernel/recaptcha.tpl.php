@@ -23,8 +23,16 @@
     <input type="hidden" name="pow_challenge" value="">
     <input type="hidden" name="pow_nonce" value="">
 
-    <div class="mt-2 text-muted small" data-powcaptcha-status>
-        <?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('user/login','Verifying captcha...');?>
+    <style>
+        @keyframes pow-spin  { to { transform: rotate(360deg); } }
+        @keyframes pow-pop   { 0% { transform: scale(.3); opacity: 0; } 65% { transform: scale(1.25); } 100% { transform: scale(1); opacity: 1; } }
+        @keyframes pow-shake { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-5px); } 75% { transform: translateX(5px); } }
+        .pow-spinner { display: inline-block; width: 11px; height: 11px; border: 2px solid currentColor; border-top-color: transparent; border-radius: 50%; animation: pow-spin .7s linear infinite; opacity: .6; vertical-align: middle; flex-shrink: 0; }
+    </style>
+
+    <div class="mt-2 small text-muted" data-powcaptcha-status style="display:flex;align-items:center;gap:6px;min-height:1.5em">
+        <span data-powcaptcha-icon class="pow-spinner"></span>
+        <span data-powcaptcha-msg><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('user/login','Verifying captcha...');?></span>
     </div>
 
     <script>
@@ -37,6 +45,8 @@
             var challengeInput = form.querySelector('input[name="pow_challenge"]');
             var nonceInput = form.querySelector('input[name="pow_nonce"]');
             var statusEl = form.querySelector('[data-powcaptcha-status]');
+            var iconEl   = statusEl ? statusEl.querySelector('[data-powcaptcha-icon]') : null;
+            var msgEl    = statusEl ? statusEl.querySelector('[data-powcaptcha-msg]')  : null;
 
             var solvePromise = null;
             var challengeExpiresAt = 0;
@@ -52,14 +62,23 @@
                 if (!statusEl) {
                     return;
                 }
-                statusEl.textContent = message;
+                msgEl.textContent = message;
                 statusEl.className = 'mt-2 small';
                 if (state === 'success') {
                     statusEl.classList.add('text-success');
+                    iconEl.className = '';
+                    iconEl.textContent = '✓';
+                    iconEl.style.cssText = 'font-size:1.15em;display:inline-block;flex-shrink:0;animation:pow-pop .35s cubic-bezier(.175,.885,.32,1.275) both';
                 } else if (state === 'error') {
                     statusEl.classList.add('text-danger');
+                    iconEl.className = '';
+                    iconEl.textContent = '✕';
+                    iconEl.style.cssText = 'font-size:1.15em;display:inline-block;flex-shrink:0;animation:pow-shake .4s ease-out both';
                 } else {
                     statusEl.classList.add('text-muted');
+                    iconEl.className = 'pow-spinner';
+                    iconEl.textContent = '';
+                    iconEl.style.cssText = '';
                 }
             }
 
