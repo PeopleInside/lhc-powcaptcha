@@ -59,6 +59,7 @@ This extension is designed to integrate directly into the core page:
 - `site_admin/system/recaptcha`
 
 You do **not** need a separate extension settings page in normal conditions.
+If core override is not visible, use fallback page: `site_admin/powcaptcha/settings`.
 
 ## Troubleshooting when `Local PoW captcha` is not visible
 
@@ -73,6 +74,9 @@ You do **not** need a separate extension settings page in normal conditions.
    - another extension/theme overriding `design/defaulttheme/tpl/lhsystem/recaptcha.tpl.php`
 6. Reopen `site_admin/system/recaptcha` and verify provider list contains:
    - `Local PoW captcha`
+7. If provider is still missing, open fallback page:
+   - `site_admin/powcaptcha/settings`
+   - enable PoW and save (this writes `provider=pow` in recaptcha settings)
 
 If a hard override conflict cannot be resolved, only then consider a dedicated
 extension settings page as a fallback.

@@ -8,3 +8,8 @@ $ViewList['challenge'] = array(
     'params' => array('action'),
     'uparams' => array()
 );
+
+$ViewList['settings'] = array(
+    'params' => array(),
+    'uparams' => array()
+);

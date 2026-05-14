@@ -4,7 +4,10 @@ header('Content-Type: application/json; charset=utf-8');
 
 if (!erLhcoreClassPowCaptcha::isPowEnabled()) {
     http_response_code(404);
-    echo json_encode(array('error' => 'pow_disabled'));
+    echo json_encode(array(
+        'error' => 'pow_disabled',
+        'hint' => 'Enable PoW in site_admin/system/recaptcha or site_admin/powcaptcha/settings'
+    ));
     exit;
 }
 
