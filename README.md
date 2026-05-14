@@ -52,6 +52,35 @@ array(
 
 6. Save.
 
+## Core page integration (important)
+
+This extension is designed to integrate directly into the core page:
+
+- `site_admin/system/recaptcha`
+
+You do **not** need a separate extension settings page in normal conditions.
+If core override is not visible, use fallback page: `site_admin/powcaptcha/settings`.
+
+## Troubleshooting when `Local PoW captcha` is not visible
+
+1. Confirm extension path in your real LHC installation:
+   - `lhc_web/extension/lhcpowcaptcha`
+2. Confirm extension is enabled in `lhc_web/settings/settings.ini.php`:
+   - `extensions => array('lhcpowcaptcha')`
+3. Clear Live Helper Chat cache from back office.
+4. Reset PHP OPcache (or restart PHP-FPM/Apache service).
+5. Check for conflicts:
+   - another extension overriding `modules/lhsystem/recaptcha.php`
+   - another extension/theme overriding `design/defaulttheme/tpl/lhsystem/recaptcha.tpl.php`
+6. Reopen `site_admin/system/recaptcha` and verify provider list contains:
+   - `Local PoW captcha`
+7. If provider is still missing, open fallback page:
+   - `site_admin/powcaptcha/settings`
+   - enable PoW and save (this writes `provider=pow` in recaptcha settings)
+
+If a hard override conflict cannot be resolved, only then consider a dedicated
+extension settings page as a fallback.
+
 ## Recommended secure defaults
 
 - Difficulty: `18`
