@@ -1,5 +1,9 @@
 <h1><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Captcha settings');?></h1>
 
+<p class="text-muted small">
+    <?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','PoW captcha integrates in this core page; a separate extension settings page is not required.');?>
+</p>
+
 <?php if (isset($updated) && $updated == 'done') : $msg = erTranslationClassLhTranslation::getInstance()->getTranslation('system/smtp','Settings updated'); ?>
     <?php include(erLhcoreClassDesign::designtpl('lhkernel/alert_success.tpl.php'));?>
 <?php endif; ?>
