@@ -15,6 +15,8 @@ namespace LiveHelperChat\Validators;
  */
 class CaptchaValidator
 {
+    private const VALID_PROVIDERS = array('google', 'turnstile', 'pow');
+
     public static function getCaptchaSettings(): array
     {
         $recaptchaData = \erLhcoreClassModelChatConfig::fetch('recaptcha_data')->data_value;
@@ -33,7 +35,7 @@ class CaptchaValidator
         ), $recaptchaData);
 
         $normalizedData['enabled'] = (int)$normalizedData['enabled'];
-        $normalizedData['provider'] = in_array($normalizedData['provider'], array('google', 'turnstile', 'pow')) ? $normalizedData['provider'] : 'google';
+        $normalizedData['provider'] = in_array($normalizedData['provider'], self::VALID_PROVIDERS) ? $normalizedData['provider'] : 'google';
         $normalizedData['site_key'] = (string)$normalizedData['site_key'];
         $normalizedData['secret_key'] = (string)$normalizedData['secret_key'];
         $normalizedData['turnstile_site_key'] = (string)$normalizedData['turnstile_site_key'];
