@@ -96,6 +96,11 @@ If a hard override conflict cannot be resolved, resolve the override conflict be
 - Difficulty: `18`
 - TTL: `180`
 
+If users report slow challenge solving on low-power devices, tune gradually:
+
+- start from `16-18` for balanced protection/performance
+- increase to `20-22` only when clients can absorb higher CPU cost
+
 For stronger protection (with more client CPU cost):
 
 - Difficulty: `20-22`

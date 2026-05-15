@@ -96,41 +96,52 @@
                     Math.floor(Date.now() / 1000) < challengeExpiresAt - 30;
             }
 
-            function hasLeadingZeroBits(hexHash, requiredBits) {
-                var fullZeroNibbles = Math.floor(requiredBits / 4);
-                var remainingBits = requiredBits % 4;
+            function hasLeadingZeroBitsFromBytes(hashBytes, requiredBits) {
+                var fullZeroBytes = Math.floor(requiredBits / 8);
+                var remainingBits = requiredBits % 8;
 
-                if (fullZeroNibbles > 0 && hexHash.slice(0, fullZeroNibbles) !== '0'.repeat(fullZeroNibbles)) {
-                    return false;
+                for (var i = 0; i < fullZeroBytes; i++) {
+                    if (hashBytes[i] !== 0) {
+                        return false;
+                    }
                 }
 
                 if (remainingBits === 0) {
                     return true;
                 }
 
-                var nibble = parseInt(hexHash.charAt(fullZeroNibbles), 16);
-                var threshold = 1 << (4 - remainingBits);
-                return nibble < threshold;
+                var mask = (0xFF << (8 - remainingBits)) & 0xFF;
+                return (hashBytes[fullZeroBytes] & mask) === 0;
             }
 
-            async function sha256Hex(input) {
-                var data = new TextEncoder().encode(input);
+            var textEncoder = new TextEncoder();
+
+            async function sha256HasLeadingZeroBits(input, requiredBits) {
+                var data = textEncoder.encode(input);
                 var digest = await crypto.subtle.digest('SHA-256', data);
-                var bytes = Array.from(new Uint8Array(digest));
-                return bytes.map(function (b) { return b.toString(16).padStart(2, '0'); }).join('');
+                return hasLeadingZeroBitsFromBytes(new Uint8Array(digest), requiredBits);
             }
 
             async function solvePow(challenge, difficulty) {
                 var nonce = 0;
+                var prefix = challenge + '|';
+                var lastYieldAt = (window.performance && typeof window.performance.now === 'function') ? window.performance.now() : Date.now();
+
                 while (true) {
                     var candidate = nonce.toString(16);
-                    var digest = await sha256Hex(challenge + '|' + candidate);
-                    if (hasLeadingZeroBits(digest, difficulty)) {
+
+                    if (await sha256HasLeadingZeroBits(prefix + candidate, difficulty)) {
                         return candidate;
                     }
+
                     nonce++;
-                    if ((nonce % 50) === 0) {
-                        await new Promise(function (resolve) { setTimeout(resolve, 0); });
+
+                    if ((nonce % 250) === 0) {
+                        var now = (window.performance && typeof window.performance.now === 'function') ? window.performance.now() : Date.now();
+                        if ((now - lastYieldAt) >= 12) {
+                            await new Promise(function (resolve) { setTimeout(resolve, 0); });
+                            lastYieldAt = now;
+                        }
                     }
                 }
             }
@@ -153,15 +164,18 @@
                 }
 
                 var challengeData = await response.json();
-                if (!challengeData.challenge || !challengeData.difficulty) {
+                var difficulty = parseInt(challengeData.difficulty, 10);
+                var expiresIn = parseInt(challengeData.expires_in, 10);
+
+                if (!challengeData.challenge || isNaN(difficulty) || difficulty < 12 || difficulty > 26 || isNaN(expiresIn) || expiresIn <= 0) {
                     throw new Error('challenge_payload_invalid');
                 }
 
-                challengeExpiresAt = Math.floor(Date.now() / 1000) + parseInt(challengeData.expires_in, 10);
+                challengeExpiresAt = Math.floor(Date.now() / 1000) + expiresIn;
 
                 setStatus(MSG_SOLVING);
 
-                var nonce = await solvePow(challengeData.challenge, parseInt(challengeData.difficulty, 10));
+                var nonce = await solvePow(challengeData.challenge, difficulty);
 
                 challengeInput.value = challengeData.challenge;
                 nonceInput.value = nonce;
