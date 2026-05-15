@@ -53,7 +53,8 @@
             var POW_DIFFICULTY_MIN = 12;
             var POW_DIFFICULTY_MAX = 26;
             var POW_SOLVE_YIELD_CHECK_EVERY = 1000;
-            var POW_SOLVE_YIELD_AFTER_MS = 12;
+            var POW_SOLVE_YIELD_INTERVAL_MS = 12;
+            var POW_CHALLENGE_EXPIRES_IN_MAX = 600;
 
             var MSG_PREPARING  = <?php echo json_encode(erTranslationClassLhTranslation::getInstance()->getTranslation('user/login', 'Verifying captcha...'));?>;
             var MSG_SOLVING    = <?php echo json_encode(erTranslationClassLhTranslation::getInstance()->getTranslation('user/login', 'Solving captcha challenge...'));?>;
@@ -149,7 +150,7 @@
 
                     if ((nonce % POW_SOLVE_YIELD_CHECK_EVERY) === 0) {
                         var now = getNow();
-                        if ((now - lastYieldAt) >= POW_SOLVE_YIELD_AFTER_MS) {
+                        if ((now - lastYieldAt) >= POW_SOLVE_YIELD_INTERVAL_MS) {
                             await new Promise(function (resolve) { setTimeout(resolve, 0); });
                             lastYieldAt = getNow();
                         }
@@ -180,7 +181,7 @@
 
                 var hasValidChallenge = !!challengeData.challenge;
                 var hasValidDifficulty = !isNaN(difficulty) && difficulty >= POW_DIFFICULTY_MIN && difficulty <= POW_DIFFICULTY_MAX;
-                var hasValidExpiresIn = !isNaN(expiresIn) && expiresIn > 0;
+                var hasValidExpiresIn = !isNaN(expiresIn) && expiresIn > 0 && expiresIn <= POW_CHALLENGE_EXPIRES_IN_MAX;
 
                 if (!hasValidChallenge || !hasValidDifficulty || !hasValidExpiresIn) {
                     throw new Error('challenge_payload_invalid');
