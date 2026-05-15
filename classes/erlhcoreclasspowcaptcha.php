@@ -169,9 +169,7 @@ class erLhcoreClassPowCaptcha
             return false;
         }
 
-        $digest = $proofHash;
-
-        if (!self::hasLeadingZeroBits($digest, $difficulty)) {
+        if (!self::hasLeadingZeroBits($proofHash, $difficulty)) {
             $reason = 'insufficient_work';
             return false;
         }

@@ -52,7 +52,7 @@
             var challengeExpiresAt = 0;
             var POW_DIFFICULTY_MIN = 12;
             var POW_DIFFICULTY_MAX = 26;
-            var POW_SOLVE_YIELD_CHECK_EVERY = 250;
+            var POW_SOLVE_YIELD_CHECK_EVERY = 1000;
             var POW_SOLVE_YIELD_AFTER_MS = 12;
 
             var MSG_PREPARING  = <?php echo json_encode(erTranslationClassLhTranslation::getInstance()->getTranslation('user/login', 'Verifying captcha...'));?>;
@@ -126,6 +126,13 @@
                 return hasLeadingZeroBitsFromBytes(new Uint8Array(digest), requiredBits);
             }
 
+            function getNow() {
+                if (window.performance && typeof window.performance.now === 'function') {
+                    return window.performance.now();
+                }
+                return Date.now();
+            }
+
             async function solvePow(challenge, difficulty) {
                 var nonce = 0;
                 var prefix = challenge + '|';
@@ -189,13 +196,6 @@
                 nonceInput.value = nonce;
 
                 setStatus(MSG_VERIFIED, 'success');
-            }
-
-            function getNow() {
-                if (window.performance && typeof window.performance.now === 'function') {
-                    return window.performance.now();
-                }
-                return Date.now();
             }
 
             if (!window.crypto || !window.crypto.subtle || !window.TextEncoder) {
