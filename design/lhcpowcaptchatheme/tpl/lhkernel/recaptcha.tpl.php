@@ -129,7 +129,7 @@
             async function solvePow(challenge, difficulty) {
                 var nonce = 0;
                 var prefix = challenge + '|';
-                var lastYieldAt = (window.performance && typeof window.performance.now === 'function') ? window.performance.now() : Date.now();
+                var lastYieldAt = getNow();
 
                 while (true) {
                     var candidate = nonce.toString(16);
@@ -141,7 +141,7 @@
                     nonce++;
 
                     if ((nonce % POW_SOLVE_YIELD_CHECK_EVERY) === 0) {
-                        var now = (window.performance && typeof window.performance.now === 'function') ? window.performance.now() : Date.now();
+                        var now = getNow();
                         if ((now - lastYieldAt) >= POW_SOLVE_YIELD_AFTER_MS) {
                             await new Promise(function (resolve) { setTimeout(resolve, 0); });
                             lastYieldAt = now;
@@ -171,7 +171,11 @@
                 var difficulty = parseInt(challengeData.difficulty, 10);
                 var expiresIn = parseInt(challengeData.expires_in, 10);
 
-                if (!challengeData.challenge || isNaN(difficulty) || difficulty < POW_DIFFICULTY_MIN || difficulty > POW_DIFFICULTY_MAX || isNaN(expiresIn) || expiresIn <= 0) {
+                var hasValidChallenge = !!challengeData.challenge;
+                var hasValidDifficulty = !isNaN(difficulty) && difficulty >= POW_DIFFICULTY_MIN && difficulty <= POW_DIFFICULTY_MAX;
+                var hasValidExpiresIn = !isNaN(expiresIn) && expiresIn > 0;
+
+                if (!hasValidChallenge || !hasValidDifficulty || !hasValidExpiresIn) {
                     throw new Error('challenge_payload_invalid');
                 }
 
@@ -185,6 +189,13 @@
                 nonceInput.value = nonce;
 
                 setStatus(MSG_VERIFIED, 'success');
+            }
+
+            function getNow() {
+                if (window.performance && typeof window.performance.now === 'function') {
+                    return window.performance.now();
+                }
+                return Date.now();
             }
 
             if (!window.crypto || !window.crypto.subtle || !window.TextEncoder) {
