@@ -151,7 +151,7 @@
                         var now = getNow();
                         if ((now - lastYieldAt) >= POW_SOLVE_YIELD_AFTER_MS) {
                             await new Promise(function (resolve) { setTimeout(resolve, 0); });
-                            lastYieldAt = now;
+                            lastYieldAt = getNow();
                         }
                     }
                 }
