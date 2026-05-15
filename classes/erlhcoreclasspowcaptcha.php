@@ -169,9 +169,7 @@ class erLhcoreClassPowCaptcha
             return false;
         }
 
-        $digest = hash('sha256', $challenge . '|' . $nonce);
-
-        if (!self::hasLeadingZeroBits($digest, $difficulty)) {
+        if (!self::hasLeadingZeroBits($proofHash, $difficulty)) {
             $reason = 'insufficient_work';
             return false;
         }
