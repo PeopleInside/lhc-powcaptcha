@@ -50,6 +50,10 @@
 
             var solvePromise = null;
             var challengeExpiresAt = 0;
+            var POW_DIFFICULTY_MIN = 12;
+            var POW_DIFFICULTY_MAX = 26;
+            var POW_SOLVE_YIELD_CHECK_EVERY = 250;
+            var POW_SOLVE_YIELD_AFTER_MS = 12;
 
             var MSG_PREPARING  = <?php echo json_encode(erTranslationClassLhTranslation::getInstance()->getTranslation('user/login', 'Verifying captcha...'));?>;
             var MSG_SOLVING    = <?php echo json_encode(erTranslationClassLhTranslation::getInstance()->getTranslation('user/login', 'Solving captcha challenge...'));?>;
@@ -136,9 +140,9 @@
 
                     nonce++;
 
-                    if ((nonce % 250) === 0) {
+                    if ((nonce % POW_SOLVE_YIELD_CHECK_EVERY) === 0) {
                         var now = (window.performance && typeof window.performance.now === 'function') ? window.performance.now() : Date.now();
-                        if ((now - lastYieldAt) >= 12) {
+                        if ((now - lastYieldAt) >= POW_SOLVE_YIELD_AFTER_MS) {
                             await new Promise(function (resolve) { setTimeout(resolve, 0); });
                             lastYieldAt = now;
                         }
@@ -167,7 +171,7 @@
                 var difficulty = parseInt(challengeData.difficulty, 10);
                 var expiresIn = parseInt(challengeData.expires_in, 10);
 
-                if (!challengeData.challenge || isNaN(difficulty) || difficulty < 12 || difficulty > 26 || isNaN(expiresIn) || expiresIn <= 0) {
+                if (!challengeData.challenge || isNaN(difficulty) || difficulty < POW_DIFFICULTY_MIN || difficulty > POW_DIFFICULTY_MAX || isNaN(expiresIn) || expiresIn <= 0) {
                     throw new Error('challenge_payload_invalid');
                 }
 
