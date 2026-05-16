@@ -20,6 +20,19 @@ if (!in_array($action, $allowedActions, true)) {
     exit;
 }
 
+$retryAfter = null;
+if (!erLhcoreClassPowCaptcha::isChallengeRequestAllowed($action, $retryAfter)) {
+    http_response_code(429);
+    if ($retryAfter !== null && $retryAfter > 0) {
+        header('Retry-After: ' . (int)$retryAfter);
+    }
+    echo json_encode(array(
+        'error' => 'rate_limited',
+        'retry_after' => (int)($retryAfter ?? 1),
+    ));
+    exit;
+}
+
 $challenge = erLhcoreClassPowCaptcha::createChallenge($action);
 
 echo json_encode(array(

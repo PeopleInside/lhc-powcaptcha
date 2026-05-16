@@ -9,6 +9,10 @@ class erLhcoreClassPowCaptcha
     private const MAX_DIFFICULTY = 26;
     private const MIN_TTL = 60;
     private const MAX_TTL = 600;
+    private const MAX_CHALLENGE_LENGTH = 2048;
+    private const CHALLENGE_RL_WINDOW_SECONDS = 60;
+    private const CHALLENGE_RL_PER_SESSION = 30;
+    private const CHALLENGE_RL_PER_IP = 180;
 
     public static function getRecaptchaSettings(): array
     {
@@ -68,6 +72,7 @@ class erLhcoreClassPowCaptcha
             'e' => $now + $ttl,
             'n' => bin2hex(random_bytes(16)),
             'd' => $difficulty,
+            's' => self::getSessionBindingToken(),
         );
 
         $encodedPayload = self::base64UrlEncode(json_encode($payload));
@@ -102,6 +107,11 @@ class erLhcoreClassPowCaptcha
             return false;
         }
 
+        if (strlen($challenge) > self::MAX_CHALLENGE_LENGTH) {
+            $reason = 'challenge_too_large';
+            return false;
+        }
+
         $parts = explode('.', $challenge, 2);
         if (count($parts) !== 2) {
             $reason = 'challenge_invalid';
@@ -110,6 +120,12 @@ class erLhcoreClassPowCaptcha
 
         $encodedPayload = $parts[0];
         $providedSignature = $parts[1];
+
+        if (!preg_match('/^[a-f0-9]{64}$/', $providedSignature)) {
+            $reason = 'signature_invalid';
+            return false;
+        }
+
         $calculatedSignature = hash_hmac('sha256', $encodedPayload, self::getSecret());
 
         if (!hash_equals($calculatedSignature, $providedSignature)) {
@@ -131,6 +147,11 @@ class erLhcoreClassPowCaptcha
 
         if (!isset($payload['a']) || !is_string($payload['a']) || $payload['a'] !== $action) {
             $reason = 'action_mismatch';
+            return false;
+        }
+
+        if (!isset($payload['s']) || !is_string($payload['s']) || !hash_equals(self::getSessionBindingToken(), $payload['s'])) {
+            $reason = 'session_mismatch';
             return false;
         }
 
@@ -180,6 +201,66 @@ class erLhcoreClassPowCaptcha
         return true;
     }
 
+    public static function isChallengeRequestAllowed(string $action, ?int &$retryAfter = null): bool
+    {
+        $retryAfter = null;
+        $now = time();
+
+        if (!isset($_SESSION['lhc_powcaptcha_challenge_rl']) || !is_array($_SESSION['lhc_powcaptcha_challenge_rl'])) {
+            $_SESSION['lhc_powcaptcha_challenge_rl'] = array();
+        }
+
+        $sessionState = isset($_SESSION['lhc_powcaptcha_challenge_rl'][$action]) && is_array($_SESSION['lhc_powcaptcha_challenge_rl'][$action])
+            ? $_SESSION['lhc_powcaptcha_challenge_rl'][$action]
+            : array('w' => $now, 'c' => 0);
+
+        $sessionWindowStart = isset($sessionState['w']) ? (int)$sessionState['w'] : $now;
+        $sessionCount = isset($sessionState['c']) ? (int)$sessionState['c'] : 0;
+
+        if (($now - $sessionWindowStart) >= self::CHALLENGE_RL_WINDOW_SECONDS) {
+            $sessionWindowStart = $now;
+            $sessionCount = 0;
+        }
+
+        if ($sessionCount >= self::CHALLENGE_RL_PER_SESSION) {
+            $retryAfter = max(1, self::CHALLENGE_RL_WINDOW_SECONDS - ($now - $sessionWindowStart));
+            return false;
+        }
+
+        $clientIp = self::getClientIp();
+        if (function_exists('apcu_fetch') && function_exists('apcu_store') && $clientIp !== '') {
+            $ipKey = 'lhc_powcaptcha_rl_' . hash('sha256', $action . '|' . $clientIp);
+            $ipData = apcu_fetch($ipKey, $ipDataExists);
+
+            if (!$ipDataExists || !is_array($ipData)) {
+                $ipData = array('w' => $now, 'c' => 0);
+            }
+
+            $ipWindowStart = isset($ipData['w']) ? (int)$ipData['w'] : $now;
+            $ipCount = isset($ipData['c']) ? (int)$ipData['c'] : 0;
+
+            if (($now - $ipWindowStart) >= self::CHALLENGE_RL_WINDOW_SECONDS) {
+                $ipWindowStart = $now;
+                $ipCount = 0;
+            }
+
+            if ($ipCount >= self::CHALLENGE_RL_PER_IP) {
+                $retryAfter = max(1, self::CHALLENGE_RL_WINDOW_SECONDS - ($now - $ipWindowStart));
+                return false;
+            }
+
+            $ipData = array('w' => $ipWindowStart, 'c' => $ipCount + 1);
+            apcu_store($ipKey, $ipData, self::CHALLENGE_RL_WINDOW_SECONDS + 2);
+        }
+
+        $_SESSION['lhc_powcaptcha_challenge_rl'][$action] = array(
+            'w' => $sessionWindowStart,
+            'c' => $sessionCount + 1,
+        );
+
+        return true;
+    }
+
     private static function cleanupReplayCache(int $now): void
     {
         if (!isset($_SESSION['lhc_powcaptcha_used']) || !is_array($_SESSION['lhc_powcaptcha_used'])) {
@@ -217,6 +298,31 @@ class erLhcoreClassPowCaptcha
     private static function getSecret(): string
     {
         return hash('sha256', (string)erConfigClassLhConfig::getInstance()->getSetting('site', 'secrethash'));
+    }
+
+    private static function getSessionBindingToken(): string
+    {
+        $sessionId = session_id();
+        if (is_string($sessionId) && $sessionId !== '') {
+            return hash_hmac('sha256', 'sid|' . $sessionId, self::getSecret());
+        }
+
+        $clientIp = self::getClientIp();
+        $userAgent = isset($_SERVER['HTTP_USER_AGENT']) ? (string)$_SERVER['HTTP_USER_AGENT'] : '';
+
+        return hash_hmac('sha256', 'ctx|' . $clientIp . '|' . $userAgent, self::getSecret());
+    }
+
+    private static function getClientIp(): string
+    {
+        if (class_exists('erLhcoreClassIPDetect')) {
+            $ip = (string)erLhcoreClassIPDetect::getIP();
+            if ($ip !== '') {
+                return $ip;
+            }
+        }
+
+        return isset($_SERVER['REMOTE_ADDR']) ? (string)$_SERVER['REMOTE_ADDR'] : '';
     }
 
     private static function base64UrlEncode(string $data): string

@@ -14,9 +14,11 @@ This extension adds a new captcha provider in `site_admin/system/recaptcha`:
 When selected and enabled, LHC will:
 
 - Generate short-lived signed PoW challenges server-side
+- Bind PoW challenges to current user session/context
 - Solve challenge client-side in browser (Web Crypto)
 - Verify PoW server-side before login/password-reminder processing
 - Reject replayed proofs (session-level replay protection)
+- Rate-limit challenge generation requests server-side
 
 ## Disclaimer
 
