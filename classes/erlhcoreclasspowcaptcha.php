@@ -268,7 +268,7 @@ class erLhcoreClassPowCaptcha
         }
 
         foreach ($_SESSION['lhc_powcaptcha_used'] as $proof => $expiresAt) {
-            if ((int)$expiresAt < ($now - 30)) {
+            if ((int)$expiresAt < $now) {
                 unset($_SESSION['lhc_powcaptcha_used'][$proof]);
             }
         }
@@ -308,9 +308,8 @@ class erLhcoreClassPowCaptcha
         }
 
         $clientIp = self::getClientIp();
-        $userAgent = isset($_SERVER['HTTP_USER_AGENT']) ? (string)$_SERVER['HTTP_USER_AGENT'] : '';
 
-        return hash_hmac('sha256', 'ctx|' . $clientIp . '|' . $userAgent, self::getSecret());
+        return hash_hmac('sha256', 'ctx|' . $clientIp, self::getSecret());
     }
 
     private static function getClientIp(): string
