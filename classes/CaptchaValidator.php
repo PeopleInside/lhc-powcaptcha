@@ -140,7 +140,7 @@ class CaptchaValidator
             );
         }
 
-        if (!(isset($result['score']) && (float)$result['score'] >= 0.1)) {
+        if (!(isset($result['score']) && (float)$result['score'] >= 0.5)) {
             return array(
                 'valid' => false,
                 'provider' => 'google',
