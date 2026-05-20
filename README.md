@@ -55,6 +55,7 @@ array(
 - **Enable** = checked
 - **Captcha provider** = `Local PoW captcha`
 - Choose `Difficulty` and `Challenge TTL`
+- Optional: set **Allowed captcha actions** (comma-separated), defaults to `login_action,forgot_password_action`
 
 6. Save.
 
@@ -136,3 +137,25 @@ Or switch provider back to `google` / `turnstile`.
 - This extension uses existing LHC recaptcha config storage with additional PoW keys.
 - PoW challenge signing uses LHC `site.secrethash` internally.
 - No third-party captcha service is required in PoW mode.
+
+## APCu requirement (recommended for production)
+
+PoW works without APCu, but with reduced protections:
+
+- per-IP challenge rate limiting is not available (session limit still applies)
+- cross-session replay detection is not available (session replay detection still applies)
+
+The admin captcha page shows a warning when APCu is missing in PoW mode.
+
+## Secret rotation (`site.secrethash`)
+
+PoW challenge signatures and session/context binding are derived from `site.secrethash`.
+Rotating it invalidates all active PoW challenges immediately.
+
+Suggested rotation procedure:
+
+1. Schedule a low-traffic maintenance window.
+2. Change `site.secrethash` in Live Helper Chat configuration.
+3. Clear LHC cache and reset PHP OPcache.
+4. Ask users to refresh login/forgot-password pages if they see one failed attempt after rotation.
+5. Verify new challenges are issued and accepted.

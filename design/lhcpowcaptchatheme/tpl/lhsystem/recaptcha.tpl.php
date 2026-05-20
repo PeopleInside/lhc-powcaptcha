@@ -63,6 +63,11 @@
         <p>
             <?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','This uses a local Proof-of-Work captcha and does not require third-party services.');?>
         </p>
+        <?php if (!erLhcoreClassPowCaptcha::isApcuAvailable()) : ?>
+            <div class="alert alert-warning">
+                <?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','APCu is not available. PoW will still work, but per-IP challenge rate limiting and cross-session replay detection are reduced to session-only protections.');?>
+            </div>
+        <?php endif; ?>
 
         <div class="form-group">
             <label><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Difficulty (12-26 leading zero bits)');?></label>
@@ -72,6 +77,12 @@
         <div class="form-group">
             <label><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Challenge TTL in seconds (60-600)');?></label>
             <input type="number" min="60" max="600" step="1" class="form-control" name="pow_ttl" value="<?php echo isset($rc_data['pow_ttl']) ? (int)$rc_data['pow_ttl'] : 180?>" />
+        </div>
+
+        <div class="form-group">
+            <label><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Allowed captcha actions');?></label>
+            <input type="text" class="form-control" name="pow_allowed_actions" value="<?php echo htmlspecialchars(implode(',', erLhcoreClassPowCaptcha::getAllowedActions()))?>" />
+            <small class="form-text text-muted"><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Comma-separated action names (letters, numbers, underscore).');?></small>
         </div>
     </div>
 

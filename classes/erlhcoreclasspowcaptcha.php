@@ -13,6 +13,10 @@ class erLhcoreClassPowCaptcha
     private const CHALLENGE_RL_WINDOW_SECONDS = 60;
     private const CHALLENGE_RL_PER_SESSION = 30;
     private const CHALLENGE_RL_PER_IP = 180;
+    private const MAX_SESSION_REPLAY_ENTRIES = 256;
+    private const BINDING_COOKIE_NAME = 'lhc_powcaptcha_ctx';
+    private const BINDING_COOKIE_TTL = 86400;
+    private const DEFAULT_ALLOWED_ACTIONS = array('login_action', 'forgot_password_action');
 
     private static bool $apcuMissingLogged = false;
 
@@ -42,6 +46,7 @@ class erLhcoreClassPowCaptcha
 
         $settings['pow_difficulty'] = isset($settings['pow_difficulty']) ? (int)$settings['pow_difficulty'] : self::DEFAULT_DIFFICULTY;
         $settings['pow_ttl'] = isset($settings['pow_ttl']) ? (int)$settings['pow_ttl'] : self::DEFAULT_TTL;
+        $settings['pow_allowed_actions'] = isset($settings['pow_allowed_actions']) ? $settings['pow_allowed_actions'] : self::DEFAULT_ALLOWED_ACTIONS;
 
         if ($settings['pow_difficulty'] < self::MIN_DIFFICULTY || $settings['pow_difficulty'] > self::MAX_DIFFICULTY) {
             $settings['pow_difficulty'] = self::DEFAULT_DIFFICULTY;
@@ -51,6 +56,14 @@ class erLhcoreClassPowCaptcha
             $settings['pow_ttl'] = self::DEFAULT_TTL;
         }
 
+        if (is_string($settings['pow_allowed_actions'])) {
+            $settings['pow_allowed_actions'] = self::parseAllowedActionsInput($settings['pow_allowed_actions']);
+        } elseif (!is_array($settings['pow_allowed_actions'])) {
+            $settings['pow_allowed_actions'] = self::DEFAULT_ALLOWED_ACTIONS;
+        }
+
+        $settings['pow_allowed_actions'] = self::normalizeAllowedActions($settings['pow_allowed_actions']);
+
         return $settings;
     }
 
@@ -58,6 +71,36 @@ class erLhcoreClassPowCaptcha
     {
         $settings = self::getRecaptchaSettings();
         return ((int)$settings['enabled'] === 1 && $settings['provider'] === 'pow');
+    }
+
+    public static function isApcuAvailable(): bool
+    {
+        return function_exists('apcu_fetch') && function_exists('apcu_store');
+    }
+
+    public static function getAllowedActions(): array
+    {
+        $settings = self::getRecaptchaSettings();
+        return self::normalizeAllowedActions($settings['pow_allowed_actions']);
+    }
+
+    public static function isActionAllowed(string $action): bool
+    {
+        return in_array($action, self::getAllowedActions(), true);
+    }
+
+    public static function parseAllowedActionsInput(string $input): array
+    {
+        if ($input === '') {
+            return self::DEFAULT_ALLOWED_ACTIONS;
+        }
+
+        $parts = preg_split('/[\s,]+/', $input, -1, PREG_SPLIT_NO_EMPTY);
+        if (!is_array($parts)) {
+            return self::DEFAULT_ALLOWED_ACTIONS;
+        }
+
+        return self::normalizeAllowedActions($parts);
     }
 
     public static function createChallenge(string $action): array
@@ -218,6 +261,8 @@ class erLhcoreClassPowCaptcha
 
         $_SESSION['lhc_powcaptcha_used'][$proofHash] = $expiry;
 
+        self::cleanupReplayCache($now);
+
         if ($apcuReplayKey !== null) {
             apcu_store($apcuReplayKey, 1, max(1, $expiry - $now));
         }
@@ -254,7 +299,7 @@ class erLhcoreClassPowCaptcha
         }
 
         $clientIp = self::getClientIp();
-        $apcuAvailable = function_exists('apcu_fetch') && function_exists('apcu_store');
+        $apcuAvailable = self::isApcuAvailable();
 
         if (!$apcuAvailable && !self::$apcuMissingLogged) {
             self::$apcuMissingLogged = true;
@@ -305,6 +350,13 @@ class erLhcoreClassPowCaptcha
                 unset($_SESSION['lhc_powcaptcha_used'][$proof]);
             }
         }
+
+        if (count($_SESSION['lhc_powcaptcha_used']) > self::MAX_SESSION_REPLAY_ENTRIES) {
+            asort($_SESSION['lhc_powcaptcha_used'], SORT_NUMERIC);
+            while (count($_SESSION['lhc_powcaptcha_used']) > self::MAX_SESSION_REPLAY_ENTRIES) {
+                array_shift($_SESSION['lhc_powcaptcha_used']);
+            }
+        }
     }
 
     private static function hasLeadingZeroBits(string $hexHash, int $requiredBits): bool
@@ -340,9 +392,55 @@ class erLhcoreClassPowCaptcha
             return hash_hmac('sha256', 'sid|' . $sessionId, self::getSecret());
         }
 
+        $clientBindingId = self::getClientBindingId();
+        if ($clientBindingId !== '') {
+            return hash_hmac('sha256', 'cid|' . $clientBindingId, self::getSecret());
+        }
+
         $clientIp = self::getClientIp();
 
         return hash_hmac('sha256', 'ctx|' . $clientIp, self::getSecret());
+    }
+
+    private static function getClientBindingId(): string
+    {
+        $cookieValue = isset($_COOKIE[self::BINDING_COOKIE_NAME]) ? (string)$_COOKIE[self::BINDING_COOKIE_NAME] : '';
+        if ($cookieValue !== '' && preg_match('/^[a-f0-9]{64}$/', $cookieValue)) {
+            return $cookieValue;
+        }
+
+        if (headers_sent()) {
+            return '';
+        }
+
+        try {
+            $cookieValue = bin2hex(random_bytes(32));
+        } catch (\Throwable $e) {
+            return '';
+        }
+
+        setcookie(self::BINDING_COOKIE_NAME, $cookieValue, array(
+            'expires' => time() + self::BINDING_COOKIE_TTL,
+            'path' => '/',
+            'secure' => self::isHttps(),
+            'httponly' => true,
+            'samesite' => 'Lax',
+        ));
+        $_COOKIE[self::BINDING_COOKIE_NAME] = $cookieValue;
+
+        return $cookieValue;
+    }
+
+    private static function isHttps(): bool
+    {
+        if (isset($_SERVER['HTTPS'])) {
+            $https = strtolower((string)$_SERVER['HTTPS']);
+            if ($https === 'on' || $https === '1') {
+                return true;
+            }
+        }
+
+        return (isset($_SERVER['SERVER_PORT']) && (string)$_SERVER['SERVER_PORT'] === '443');
     }
 
     private static function getClientIp(): string
@@ -360,6 +458,25 @@ class erLhcoreClassPowCaptcha
     private static function base64UrlEncode(string $data): string
     {
         return rtrim(strtr(base64_encode($data), '+/', '-_'), '=');
+    }
+
+    private static function normalizeAllowedActions(array $actions): array
+    {
+        $normalized = array();
+
+        foreach ($actions as $action) {
+            $action = trim((string)$action);
+            if ($action !== '' && preg_match('/^[a-z0-9_]{1,64}$/', $action)) {
+                $normalized[$action] = true;
+            }
+        }
+
+        $actions = array_keys($normalized);
+        if (empty($actions)) {
+            return self::DEFAULT_ALLOWED_ACTIONS;
+        }
+
+        return array_values($actions);
     }
 
     private static function base64UrlDecode(string $data): string
