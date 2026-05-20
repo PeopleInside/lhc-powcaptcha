@@ -28,6 +28,9 @@ if (isset($_POST['StoreRecaptchaSettings'])) {
         'pow_ttl' => new ezcInputFormDefinitionElement(
             ezcInputFormDefinitionElement::OPTIONAL, 'int'
         ),
+        'pow_allowed_actions' => new ezcInputFormDefinitionElement(
+            ezcInputFormDefinitionElement::OPTIONAL, 'unsafe_raw'
+        ),
         'enabled' => new ezcInputFormDefinitionElement(
             ezcInputFormDefinitionElement::OPTIONAL, 'boolean'
         )
@@ -68,6 +71,11 @@ if (isset($_POST['StoreRecaptchaSettings'])) {
 
     $data['pow_difficulty'] = ($form->hasValidData('pow_difficulty')) ? max(12, min(26, (int)$form->pow_difficulty)) : 18;
     $data['pow_ttl'] = ($form->hasValidData('pow_ttl')) ? max(60, min(600, (int)$form->pow_ttl)) : 180;
+    if ($form->hasValidData('pow_allowed_actions')) {
+        $data['pow_allowed_actions'] = erLhcoreClassPowCaptcha::parseAllowedActionsInput(trim((string)$form->pow_allowed_actions));
+    } else {
+        $data['pow_allowed_actions'] = erLhcoreClassPowCaptcha::getAllowedActions();
+    }
 
     if ($form->hasValidData('enabled') && $form->enabled == 1) {
         $data['enabled'] = 1;
