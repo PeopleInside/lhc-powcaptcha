@@ -14,6 +14,8 @@ class erLhcoreClassPowCaptcha
     private const CHALLENGE_RL_PER_SESSION = 30;
     private const CHALLENGE_RL_PER_IP = 180;
 
+    private static bool $apcuMissingLogged = false;
+
     public static function getRecaptchaSettings(): array
     {
         $settings = array();
@@ -130,6 +132,7 @@ class erLhcoreClassPowCaptcha
 
         if (!hash_equals($calculatedSignature, $providedSignature)) {
             $reason = 'signature_mismatch';
+            self::logSecurityEvent('signature_mismatch', ['action' => $action]);
             return false;
         }
 
@@ -147,11 +150,13 @@ class erLhcoreClassPowCaptcha
 
         if (!isset($payload['a']) || !is_string($payload['a']) || $payload['a'] !== $action) {
             $reason = 'action_mismatch';
+            self::logSecurityEvent('action_mismatch', ['action' => $action]);
             return false;
         }
 
         if (!isset($payload['s']) || !is_string($payload['s']) || !hash_equals(self::getSessionBindingToken(), $payload['s'])) {
             $reason = 'session_mismatch';
+            self::logSecurityEvent('session_mismatch', ['action' => $action]);
             return false;
         }
 
@@ -169,6 +174,7 @@ class erLhcoreClassPowCaptcha
 
         if ($expiry < $now) {
             $reason = 'challenge_expired';
+            self::logSecurityEvent('challenge_expired', ['action' => $action]);
             return false;
         }
 
@@ -187,7 +193,22 @@ class erLhcoreClassPowCaptcha
 
         if (isset($_SESSION['lhc_powcaptcha_used'][$proofHash])) {
             $reason = 'replay_detected';
+            self::logSecurityEvent('replay_detected', ['action' => $action, 'store' => 'session']);
             return false;
+        }
+
+        // APCu-backed cross-session replay detection (defense-in-depth when APCu is available).
+        // This supplements the session check and catches replays across nodes that share APCu
+        // (e.g. single-server setups) even if session storage is not shared.
+        $apcuReplayKey = null;
+        if (function_exists('apcu_fetch') && function_exists('apcu_store')) {
+            $apcuReplayKey = 'lhc_powcaptcha_u_' . $proofHash;
+            apcu_fetch($apcuReplayKey, $apcuProofExists);
+            if ($apcuProofExists) {
+                $reason = 'replay_detected';
+                self::logSecurityEvent('replay_detected', ['action' => $action, 'store' => 'apcu']);
+                return false;
+            }
         }
 
         if (!self::hasLeadingZeroBits($proofHash, $difficulty)) {
@@ -196,6 +217,11 @@ class erLhcoreClassPowCaptcha
         }
 
         $_SESSION['lhc_powcaptcha_used'][$proofHash] = $expiry;
+
+        if ($apcuReplayKey !== null) {
+            apcu_store($apcuReplayKey, 1, max(1, $expiry - $now));
+        }
+
         $reason = 'validated';
 
         return true;
@@ -228,7 +254,14 @@ class erLhcoreClassPowCaptcha
         }
 
         $clientIp = self::getClientIp();
-        if (function_exists('apcu_fetch') && function_exists('apcu_store') && $clientIp !== '') {
+        $apcuAvailable = function_exists('apcu_fetch') && function_exists('apcu_store');
+
+        if (!$apcuAvailable && !self::$apcuMissingLogged) {
+            self::$apcuMissingLogged = true;
+            error_log('lhc_powcaptcha apcu_unavailable: per-IP rate limiting is inactive; only per-session limits apply');
+        }
+
+        if ($apcuAvailable && $clientIp !== '') {
             $ipKey = 'lhc_powcaptcha_rl_' . hash('sha256', $action . '|' . $clientIp);
             $ipData = apcu_fetch($ipKey, $ipDataExists);
 
@@ -337,5 +370,28 @@ class erLhcoreClassPowCaptcha
         }
 
         return (string)base64_decode(strtr($data, '-_', '+/'));
+    }
+
+    /**
+     * Log a security event to the PHP error log.
+     * IP is one-way hashed so real addresses are never written to logs.
+     *
+     * @param string $event   Short machine-readable event name (e.g. 'replay_detected').
+     * @param array  $context Optional key=>value pairs to append (values must be safe to log).
+     */
+    private static function logSecurityEvent(string $event, array $context = []): void
+    {
+        $ip = self::getClientIp();
+        $parts = ['lhc_powcaptcha', $event];
+
+        if ($ip !== '') {
+            $parts[] = 'ip_hash:' . substr(hash('sha256', $ip), 0, 12);
+        }
+
+        foreach ($context as $k => $v) {
+            $parts[] = $k . ':' . $v;
+        }
+
+        error_log(implode(' ', $parts));
     }
 }
