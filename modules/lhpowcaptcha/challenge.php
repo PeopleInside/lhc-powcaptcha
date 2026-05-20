@@ -13,10 +13,9 @@ if (!erLhcoreClassPowCaptcha::isPowEnabled()) {
     exit;
 }
 
-$allowedActions = array('login_action', 'forgot_password_action');
 $action = isset($Params['user_parameters']['action']) ? (string)$Params['user_parameters']['action'] : '';
 
-if (!in_array($action, $allowedActions, true)) {
+if (!erLhcoreClassPowCaptcha::isActionAllowed($action)) {
     http_response_code(400);
     echo json_encode(array('error' => 'action_invalid'));
     exit;
