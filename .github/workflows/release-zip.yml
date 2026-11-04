@@ -1,0 +1,36 @@
+name: Build and Attach Release ZIP
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build-zip:
+    name: Build Extension ZIP
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout del repository
+        uses: actions/checkout@v4
+
+      - name: Ottieni il numero di versione dal tag
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Prepara la cartella dell'estensione
+        run: |
+          mkdir -p lhcpowcaptcha
+          # Copiamo solo le cartelle e i file necessari per l'estensione Live Helper Chat
+          # Questo esclude automaticamente cartelle di sviluppo come .git
+          cp -r bootstrap classes design modules LICENSE README.md SECURITY.md lhcpowcaptcha/
+          
+          # Se in futuro aggiungerai altri file (es. CHANGELOG.md), aggiungili qui sopra
+
+      - name: Crea l'archivio ZIP
+        run: zip -r lhcpowcaptcha-${{ steps.get_version.outputs.VERSION }}.zip lhcpowcaptcha/
+
+      - name: Carica lo ZIP nella Release di GitHub
+        uses: softprops/action-gh-release@v2
+        with:
+          files: lhcpowcaptcha-${{ steps.get_version.outputs.VERSION }}.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
