@@ -20,6 +20,28 @@ When selected and enabled, LHC will:
 - Reject replayed proofs (session-level replay protection)
 - Rate-limit challenge generation requests server-side
 
+## Attempt log, adaptive difficulty and honeypot (1.5.0 / 1.5.1)
+
+In `site_admin/system/recaptcha` (provider `Local PoW captcha`):
+
+- **Attempt log**: the last 30 captcha attempts (date, IP, action, OK/Failed, reason, difficulty, user agent), newest first,
+  with a **Clear log** button (POST + CSRF token). Stored in a hidden row of `lh_chat_config`
+  (`powcaptcha_attempt_log`, JSON). At most 20 log writes/minute per IP are stored (APCu); the rest are still counted
+  for difficulty purposes.
+- **Adaptive difficulty**: every failed attempt in the last 15 minutes from the same IP (APCu) or the same session adds
+  +1 bit (doubles the work), up to *Maximum extra difficulty bits* (default 4, so 18 -> 22). Challenges issued before
+  the failures are refused with `difficulty_too_low`, so "easy" challenges cannot be stockpiled and used later.
+  Expired challenges and `difficulty_too_low` themselves do not add penalties.
+
+Notes:
+
+- Only **captcha** failures count. A wrong password with a valid captcha is not visible to this extension.
+- Without APCu the escalation is per-session only (a client that drops cookies resets it).
+- IP and user agent are personal data: keep the log short-lived (use *Clear log*) and mention it in your privacy policy if needed.
+- Difficulty is capped at **22 bits** (base and base + extra). Above that the in-browser solver cannot finish within the TTL (26 bits = ~67M hashes). A stored value above 22 is automatically reset to 18.
+- **Honeypot** (on by default): an invisible `contact_website` field in the form. If it contains anything the attempt fails (even with a valid proof), is logged as `honeypot_triggered` and counts as a failure for adaptive difficulty. Disable it in the settings if a browser autofill ever fills it.
+- The `lhpowcaptcha/settings` fallback page was removed; use `system/recaptcha`.
+
 ## Disclaimer
 
 This software is provided **"AS IS"**, without any warranty. While it has been tested and reasonable efforts are made to ensure security and reliability, no guarantees are provided. As an open project, anyone may contribute or report issues, but this does not imply endorsement or liability from the maintainers.
@@ -96,17 +118,13 @@ If a hard override conflict cannot be resolved, resolve the override conflict be
 
 ## Recommended secure defaults
 
-- Difficulty: `18`
+- Difficulty: `18` (maximum allowed: `22`)
 - TTL: `180`
 
 If users report slow challenge solving on low-power devices, tune gradually:
 
 - start from `16-18` for balanced protection/performance
 - increase to `20-22` only when clients can absorb higher CPU cost
-
-For stronger protection (with more client CPU cost):
-
-- Difficulty: `20-22`
 
 ## Rollback / emergency disable (if something breaks)
 

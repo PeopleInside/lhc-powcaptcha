@@ -31,6 +31,15 @@ if (isset($_POST['StoreRecaptchaSettings'])) {
         'pow_allowed_actions' => new ezcInputFormDefinitionElement(
             ezcInputFormDefinitionElement::OPTIONAL, 'unsafe_raw'
         ),
+        'pow_honeypot' => new ezcInputFormDefinitionElement(
+            ezcInputFormDefinitionElement::OPTIONAL, 'boolean'
+        ),
+        'pow_adaptive' => new ezcInputFormDefinitionElement(
+            ezcInputFormDefinitionElement::OPTIONAL, 'boolean'
+        ),
+        'pow_adaptive_max_bonus' => new ezcInputFormDefinitionElement(
+            ezcInputFormDefinitionElement::OPTIONAL, 'int'
+        ),
         'enabled' => new ezcInputFormDefinitionElement(
             ezcInputFormDefinitionElement::OPTIONAL, 'boolean'
         )
@@ -69,13 +78,17 @@ if (isset($_POST['StoreRecaptchaSettings'])) {
         $data['turnstile_secret_key'] = trim($form->turnstile_secret_key);
     }
 
-    $data['pow_difficulty'] = ($form->hasValidData('pow_difficulty')) ? max(12, min(26, (int)$form->pow_difficulty)) : 18;
+    $data['pow_difficulty'] = ($form->hasValidData('pow_difficulty')) ? max(12, min(22, (int)$form->pow_difficulty)) : 18;
     $data['pow_ttl'] = ($form->hasValidData('pow_ttl')) ? max(60, min(600, (int)$form->pow_ttl)) : 180;
     if ($form->hasValidData('pow_allowed_actions')) {
         $data['pow_allowed_actions'] = erLhcoreClassPowCaptcha::parseAllowedActionsInput(trim((string)$form->pow_allowed_actions));
     } else {
         $data['pow_allowed_actions'] = erLhcoreClassPowCaptcha::getAllowedActions();
     }
+
+    $data['pow_honeypot'] = ($form->hasValidData('pow_honeypot') && $form->pow_honeypot == 1) ? 1 : 0;
+    $data['pow_adaptive'] = ($form->hasValidData('pow_adaptive') && $form->pow_adaptive == 1) ? 1 : 0;
+    $data['pow_adaptive_max_bonus'] = ($form->hasValidData('pow_adaptive_max_bonus')) ? max(0, min(8, (int)$form->pow_adaptive_max_bonus)) : 4;
 
     if ($form->hasValidData('enabled') && $form->enabled == 1) {
         $data['enabled'] = 1;
@@ -92,7 +105,19 @@ if (isset($_POST['StoreRecaptchaSettings'])) {
     $tpl->set('updated', 'done');
 }
 
+if (isset($_POST['ClearPowAttemptLog'])) {
+    if (!isset($_POST['csfr_token']) || !$currentUser->validateCSFRToken($_POST['csfr_token'])) {
+        erLhcoreClassModule::redirect('system/recaptcha');
+        exit;
+    }
+
+    erLhcoreClassPowCaptcha::clearAttemptLog();
+    $tpl->set('log_cleared', true);
+}
+
 $tpl->set('rc_data', $data);
+$tpl->set('pow_log', erLhcoreClassPowCaptcha::getAttemptLog());
+$tpl->set('pow_failures_now', erLhcoreClassPowCaptcha::getRecentFailureCount());
 
 $Result['content'] = $tpl->fetch();
 $Result['path'] = array(array('url' => erLhcoreClassDesign::baseurl('system/configuration'), 'title' => erTranslationClassLhTranslation::getInstance()->getTranslation('system/htmlcode', 'System configuration')),

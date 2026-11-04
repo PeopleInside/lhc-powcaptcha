@@ -19,7 +19,8 @@ class CaptchaValidator
 
     public static function getCaptchaSettings(): array
     {
-        $recaptchaData = \erLhcoreClassModelChatConfig::fetch('recaptcha_data')->data_value;
+        $recaptchaConfig = \erLhcoreClassModelChatConfig::fetch('recaptcha_data');
+        $recaptchaData = ($recaptchaConfig instanceof \erLhcoreClassModelChatConfig) ? $recaptchaConfig->data_value : array();
 
         if (!is_array($recaptchaData)) {
             $recaptchaData = array();

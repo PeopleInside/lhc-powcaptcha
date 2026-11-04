@@ -4,10 +4,10 @@
 <?php if ((int)$recaptchaData['enabled'] === 1 && $recaptchaData['provider'] === 'google') : ?>
     <input type="hidden" name="g-recaptcha" id="recaptcha-content" value="">
 
-    <script src="https://www.google.com/recaptcha/api.js?render=<?php echo htmlspecialchars($recaptchaData['site_key'])?>"></script>
+    <script src="https://www.google.com/recaptcha/api.js?render=<?php echo htmlspecialchars(rawurlencode($recaptchaData['site_key']))?>"></script>
     <script>
         grecaptcha.ready(function() {
-            grecaptcha.execute('<?php echo htmlspecialchars($recaptchaData['site_key'])?>', {action: '<?php echo htmlspecialchars($captchaAction)?>'})
+            grecaptcha.execute(<?php echo json_encode((string)$recaptchaData['site_key'], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT)?>, {action: <?php echo json_encode((string)$captchaAction, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT)?>})
                 .then(function(token) {
                     $('#recaptcha-content').val(token);
                 });
@@ -22,6 +22,11 @@
 <?php elseif ((int)$recaptchaData['enabled'] === 1 && $recaptchaData['provider'] === 'pow') : ?>
     <input type="hidden" name="pow_challenge" value="">
     <input type="hidden" name="pow_nonce" value="">
+    <?php if ((int)$recaptchaData['pow_honeypot'] === 1) : ?>
+    <div style="position:absolute;left:-10000px;top:auto;width:1px;height:1px;overflow:hidden" aria-hidden="true">
+        <label>Website <input type="text" name="<?php echo htmlspecialchars(erLhcoreClassPowCaptcha::getHoneypotFieldName())?>" value="" tabindex="-1" autocomplete="off"></label>
+    </div>
+    <?php endif; ?>
 
     <style>
         @keyframes pow-spin  { to { transform: rotate(360deg); } }

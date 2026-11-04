@@ -6,7 +6,10 @@ class erLhcoreClassPowCaptcha
     private const DEFAULT_DIFFICULTY = 18;
     private const DEFAULT_TTL = 180;
     private const MIN_DIFFICULTY = 12;
-    private const MAX_DIFFICULTY = 26;
+    private const MAX_DIFFICULTY = 26;       // protocol limit accepted when verifying
+    private const MAX_SETTING_DIFFICULTY = 22; // highest value an admin can set / that is ever issued
+    private const DEFAULT_HONEYPOT = 1;
+    private const HONEYPOT_FIELD = 'contact_website';
     private const MIN_TTL = 60;
     private const MAX_TTL = 600;
     private const MAX_CHALLENGE_LENGTH = 2048;
@@ -17,6 +20,20 @@ class erLhcoreClassPowCaptcha
     private const BINDING_COOKIE_NAME = 'lhc_powcaptcha_ctx';
     private const BINDING_COOKIE_TTL = 86400;
     private const DEFAULT_ALLOWED_ACTIONS = array('login_action', 'forgot_password_action');
+
+    // Adaptive difficulty: every recent captcha failure from the same IP / session adds +1 bit.
+    private const DEFAULT_ADAPTIVE = 1;
+    private const DEFAULT_ADAPTIVE_MAX_BONUS = 4;
+    private const MAX_ADAPTIVE_MAX_BONUS = 8;
+    private const FAIL_WINDOW_SECONDS = 900;
+    private const FAIL_COUNT_CAP = 1000;
+    private const NO_PENALTY_REASONS = array('validated', 'difficulty_too_low', 'challenge_expired');
+
+    // Attempt log (stored in lh_chat_config, hidden row).
+    private const LOG_IDENTIFIER = 'powcaptcha_attempt_log';
+    private const LOG_MAX_ENTRIES = 30;
+    private const LOG_MAX_BYTES = 60000;
+    private const LOG_WRITE_RL_PER_MINUTE = 20;
 
     private static bool $apcuMissingLogged = false;
 
@@ -48,7 +65,16 @@ class erLhcoreClassPowCaptcha
         $settings['pow_ttl'] = isset($settings['pow_ttl']) ? (int)$settings['pow_ttl'] : self::DEFAULT_TTL;
         $settings['pow_allowed_actions'] = isset($settings['pow_allowed_actions']) ? $settings['pow_allowed_actions'] : self::DEFAULT_ALLOWED_ACTIONS;
 
-        if ($settings['pow_difficulty'] < self::MIN_DIFFICULTY || $settings['pow_difficulty'] > self::MAX_DIFFICULTY) {
+        $settings['pow_adaptive'] = isset($settings['pow_adaptive']) ? (((int)$settings['pow_adaptive'] === 1) ? 1 : 0) : self::DEFAULT_ADAPTIVE;
+        $settings['pow_adaptive_max_bonus'] = isset($settings['pow_adaptive_max_bonus']) ? (int)$settings['pow_adaptive_max_bonus'] : self::DEFAULT_ADAPTIVE_MAX_BONUS;
+        if ($settings['pow_adaptive_max_bonus'] < 0 || $settings['pow_adaptive_max_bonus'] > self::MAX_ADAPTIVE_MAX_BONUS) {
+            $settings['pow_adaptive_max_bonus'] = self::DEFAULT_ADAPTIVE_MAX_BONUS;
+        }
+
+        $settings['pow_honeypot'] = isset($settings['pow_honeypot']) ? (((int)$settings['pow_honeypot'] === 1) ? 1 : 0) : self::DEFAULT_HONEYPOT;
+
+        // Values above MAX_SETTING_DIFFICULTY cannot be solved by a browser within the TTL.
+        if ($settings['pow_difficulty'] < self::MIN_DIFFICULTY || $settings['pow_difficulty'] > self::MAX_SETTING_DIFFICULTY) {
             $settings['pow_difficulty'] = self::DEFAULT_DIFFICULTY;
         }
 
@@ -75,7 +101,16 @@ class erLhcoreClassPowCaptcha
 
     public static function isApcuAvailable(): bool
     {
-        return function_exists('apcu_fetch') && function_exists('apcu_store');
+        if (!function_exists('apcu_fetch') || !function_exists('apcu_store')) {
+            return false;
+        }
+
+        // The extension can be loaded but switched off (apc.enabled=0, CLI, ...).
+        if (function_exists('apcu_enabled')) {
+            return (bool)apcu_enabled();
+        }
+
+        return filter_var((string)ini_get('apc.enabled'), FILTER_VALIDATE_BOOLEAN);
     }
 
     public static function getAllowedActions(): array
@@ -109,7 +144,7 @@ class erLhcoreClassPowCaptcha
 
         $now = time();
         $ttl = (int)$settings['pow_ttl'];
-        $difficulty = (int)$settings['pow_difficulty'];
+        $difficulty = self::getEffectiveDifficulty($settings);
 
         $payload = array(
             'a' => $action,
@@ -130,12 +165,34 @@ class erLhcoreClassPowCaptcha
         );
     }
 
+    public static function getHoneypotFieldName(): string
+    {
+        return self::HONEYPOT_FIELD;
+    }
+
     public static function verifySubmittedProof(array $postData, string $action, ?string &$reason = null): bool
     {
         $challenge = isset($postData['pow_challenge']) ? trim((string)$postData['pow_challenge']) : '';
         $nonce = isset($postData['pow_nonce']) ? trim((string)$postData['pow_nonce']) : '';
 
-        return self::verifyProof($challenge, $nonce, $action, $reason);
+        // Difficulty required right now (before this attempt can change it); stored in the log.
+        $requiredNow = self::getEffectiveDifficulty();
+
+        // Honeypot: a field invisible to humans. Anything in it means an automated form filler.
+        // Checked first and cheaply, without consuming the proof.
+        if ((int)self::getRecaptchaSettings()['pow_honeypot'] === 1 && isset($postData[self::HONEYPOT_FIELD])
+            && (!is_scalar($postData[self::HONEYPOT_FIELD]) || trim((string)$postData[self::HONEYPOT_FIELD]) !== '')) {
+            $reason = 'honeypot_triggered';
+            self::logSecurityEvent('honeypot_triggered', ['action' => $action]);
+            self::recordAttempt($action, false, $reason, $requiredNow);
+            return false;
+        }
+
+        $valid = self::verifyProof($challenge, $nonce, $action, $reason);
+
+        self::recordAttempt($action, $valid, (string)$reason, $requiredNow);
+
+        return $valid;
     }
 
     public static function verifyProof(string $challenge, string $nonce, string $action, ?string &$reason = null): bool
@@ -208,6 +265,14 @@ class erLhcoreClassPowCaptcha
             return false;
         }
 
+        // A challenge issued while the client had no recent failures must not be usable after
+        // failures were recorded (prevents stockpiling "easy" challenges and using them later).
+        $settingsNow = self::getRecaptchaSettings();
+        if ((int)$settingsNow['pow_adaptive'] === 1 && $difficulty < self::getEffectiveDifficulty($settingsNow)) {
+            $reason = 'difficulty_too_low';
+            return false;
+        }
+
         $now = time();
 
         if ($issuedAt > $now + 30) {
@@ -244,10 +309,9 @@ class erLhcoreClassPowCaptcha
         // This supplements the session check and catches replays across nodes that share APCu
         // (e.g. single-server setups) even if session storage is not shared.
         $apcuReplayKey = null;
-        if (function_exists('apcu_fetch') && function_exists('apcu_store')) {
+        if (self::isApcuAvailable() && function_exists('apcu_add')) {
             $apcuReplayKey = 'lhc_powcaptcha_u_' . $proofHash;
-            apcu_fetch($apcuReplayKey, $apcuProofExists);
-            if ($apcuProofExists) {
+            if (apcu_exists($apcuReplayKey)) {
                 $reason = 'replay_detected';
                 self::logSecurityEvent('replay_detected', ['action' => $action, 'store' => 'apcu']);
                 return false;
@@ -259,13 +323,18 @@ class erLhcoreClassPowCaptcha
             return false;
         }
 
+        // apcu_add() is atomic: of two concurrent requests carrying the same proof only one wins.
+        // add() can also fail for reasons other than "key exists" (cache full): only a key that
+        // really exists is a replay, otherwise fall back to the session check alone.
+        if ($apcuReplayKey !== null && !apcu_add($apcuReplayKey, 1, max(1, $expiry - $now) + 5) && apcu_exists($apcuReplayKey)) {
+            $reason = 'replay_detected';
+            self::logSecurityEvent('replay_detected', ['action' => $action, 'store' => 'apcu']);
+            return false;
+        }
+
         $_SESSION['lhc_powcaptcha_used'][$proofHash] = $expiry;
 
         self::cleanupReplayCache($now);
-
-        if ($apcuReplayKey !== null) {
-            apcu_store($apcuReplayKey, 1, max(1, $expiry - $now));
-        }
 
         $reason = 'validated';
 
@@ -337,6 +406,217 @@ class erLhcoreClassPowCaptcha
         );
 
         return true;
+    }
+
+    // ------------------------------------------------------------------
+    // Adaptive difficulty
+    // ------------------------------------------------------------------
+
+    /**
+     * Difficulty to issue / require right now: base difficulty plus one bit for every recent
+     * captcha failure of this IP (APCu) or this session, capped by "pow_adaptive_max_bonus"
+     * and by MAX_SETTING_DIFFICULTY (22: above that real browsers cannot finish within the TTL).
+     */
+    public static function getEffectiveDifficulty(?array $settings = null): int
+    {
+        if ($settings === null) {
+            $settings = self::getRecaptchaSettings();
+        }
+
+        $base = (int)$settings['pow_difficulty'];
+
+        if ((int)$settings['pow_adaptive'] !== 1) {
+            return $base;
+        }
+
+        $bonus = min((int)$settings['pow_adaptive_max_bonus'], self::getRecentFailureCount());
+
+        return min(self::MAX_SETTING_DIFFICULTY, $base + max(0, $bonus));
+    }
+
+    public static function getRecentFailureCount(): int
+    {
+        $now = time();
+        $count = 0;
+
+        if (isset($_SESSION['lhc_powcaptcha_fail']) && is_array($_SESSION['lhc_powcaptcha_fail'])) {
+            $state = $_SESSION['lhc_powcaptcha_fail'];
+            if (isset($state['l'], $state['c']) && ($now - (int)$state['l']) <= self::FAIL_WINDOW_SECONDS) {
+                $count = max($count, (int)$state['c']);
+            }
+        }
+
+        $ipKey = self::getFailureIpKey();
+        if ($ipKey !== null) {
+            $data = apcu_fetch($ipKey, $exists);
+            if ($exists && is_array($data) && isset($data['l'], $data['c']) && ($now - (int)$data['l']) <= self::FAIL_WINDOW_SECONDS) {
+                $count = max($count, (int)$data['c']);
+            }
+        }
+
+        return min($count, self::FAIL_COUNT_CAP);
+    }
+
+    private static function registerFailure(): void
+    {
+        $now = time();
+
+        $count = 0;
+        if (isset($_SESSION['lhc_powcaptcha_fail']) && is_array($_SESSION['lhc_powcaptcha_fail'])) {
+            $state = $_SESSION['lhc_powcaptcha_fail'];
+            if (isset($state['l'], $state['c']) && ($now - (int)$state['l']) <= self::FAIL_WINDOW_SECONDS) {
+                $count = (int)$state['c'];
+            }
+        }
+        $_SESSION['lhc_powcaptcha_fail'] = array('c' => min($count + 1, self::FAIL_COUNT_CAP), 'l' => $now);
+
+        $ipKey = self::getFailureIpKey();
+        if ($ipKey !== null) {
+            $data = apcu_fetch($ipKey, $exists);
+            $ipCount = 0;
+            if ($exists && is_array($data) && isset($data['l'], $data['c']) && ($now - (int)$data['l']) <= self::FAIL_WINDOW_SECONDS) {
+                $ipCount = (int)$data['c'];
+            }
+            apcu_store($ipKey, array('c' => min($ipCount + 1, self::FAIL_COUNT_CAP), 'l' => $now), self::FAIL_WINDOW_SECONDS + 5);
+        }
+    }
+
+    private static function getFailureIpKey(): ?string
+    {
+        if (!self::isApcuAvailable()) {
+            return null;
+        }
+
+        $ip = self::getClientIp();
+
+        return ($ip !== '') ? 'lhc_powcaptcha_fail_' . hash('sha256', $ip) : null;
+    }
+
+    // ------------------------------------------------------------------
+    // Attempt log (last LOG_MAX_ENTRIES attempts, newest first)
+    // ------------------------------------------------------------------
+
+    /**
+     * Called after every PoW verification. Never throws: a logging problem must not break login.
+     */
+    public static function recordAttempt(string $action, bool $ok, string $reason, int $difficulty): void
+    {
+        try {
+            if (!$ok && !in_array($reason, self::NO_PENALTY_REASONS, true)) {
+                self::registerFailure();
+            }
+
+            $ip = self::getClientIp();
+            $ip = (filter_var($ip, FILTER_VALIDATE_IP) !== false) ? $ip : '';
+
+            // Bound the DB writes a single IP can cause (the log is just a ring buffer).
+            if ($ip !== '' && self::isApcuAvailable() && function_exists('apcu_inc')) {
+                $rlKey = 'lhc_powcaptcha_lw_' . hash('sha256', $ip);
+                apcu_add($rlKey, 0, 60);
+                $written = apcu_inc($rlKey);
+                if ($written !== false && $written > self::LOG_WRITE_RL_PER_MINUTE) {
+                    return;
+                }
+            }
+
+            $userAgent = isset($_SERVER['HTTP_USER_AGENT']) ? (string)$_SERVER['HTTP_USER_AGENT'] : '';
+
+            $entry = array(
+                't' => time(),
+                'ip' => $ip,
+                'a' => substr((string)preg_replace('/[^a-z0-9_]/i', '', $action), 0, 64),
+                'ok' => $ok ? 1 : 0,
+                'r' => substr((string)preg_replace('/[^a-z0-9_]/i', '', $reason), 0, 64),
+                'd' => $difficulty,
+                'ua' => substr((string)preg_replace('/[^\x20-\x7E]/', '', $userAgent), 0, 100),
+            );
+
+            $entries = self::readLogEntries();
+            array_unshift($entries, $entry);
+            $entries = array_slice($entries, 0, self::LOG_MAX_ENTRIES);
+
+            $encoded = json_encode($entries);
+            while ($encoded !== false && strlen($encoded) > self::LOG_MAX_BYTES && count($entries) > 1) {
+                array_pop($entries);
+                $encoded = json_encode($entries);
+            }
+
+            if ($encoded !== false) {
+                self::writeLogValue($encoded);
+            }
+        } catch (\Throwable $e) {
+            error_log('lhc_powcaptcha attempt_log_failed ' . get_class($e) . ': ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * @return array[] Entries with keys t, ip, a, ok, r, d, ua (all sanitised), newest first.
+     */
+    public static function getAttemptLog(): array
+    {
+        try {
+            return self::readLogEntries();
+        } catch (\Throwable $e) {
+            error_log('lhc_powcaptcha attempt_log_read_failed ' . get_class($e) . ': ' . $e->getMessage());
+            return array();
+        }
+    }
+
+    public static function clearAttemptLog(): void
+    {
+        $stmt = \ezcDbInstance::get()->prepare('DELETE FROM `lh_chat_config` WHERE `identifier` = :id');
+        $stmt->bindValue(':id', self::LOG_IDENTIFIER);
+        $stmt->execute();
+    }
+
+    private static function readLogEntries(): array
+    {
+        $stmt = \ezcDbInstance::get()->prepare('SELECT `value` FROM `lh_chat_config` WHERE `identifier` = :id');
+        $stmt->bindValue(':id', self::LOG_IDENTIFIER);
+        $stmt->execute();
+        $raw = $stmt->fetchColumn();
+
+        if (!is_string($raw) || $raw === '') {
+            return array();
+        }
+
+        $decoded = json_decode($raw, true);
+        if (!is_array($decoded)) {
+            return array();
+        }
+
+        $entries = array();
+        foreach ($decoded as $row) {
+            if (!is_array($row) || !isset($row['t'])) {
+                continue;
+            }
+            $entries[] = array(
+                't' => (int)$row['t'],
+                'ip' => isset($row['ip']) ? (string)$row['ip'] : '',
+                'a' => isset($row['a']) ? (string)$row['a'] : '',
+                'ok' => !empty($row['ok']) ? 1 : 0,
+                'r' => isset($row['r']) ? (string)$row['r'] : '',
+                'd' => isset($row['d']) ? (int)$row['d'] : 0,
+                'ua' => isset($row['ua']) ? (string)$row['ua'] : '',
+            );
+            if (count($entries) >= self::LOG_MAX_ENTRIES) {
+                break;
+            }
+        }
+
+        return $entries;
+    }
+
+    private static function writeLogValue(string $json): void
+    {
+        $stmt = \ezcDbInstance::get()->prepare(
+            "INSERT INTO `lh_chat_config` (`identifier`, `value`, `type`, `explain`, `hidden`) VALUES (:id, :v, 0, '', 1) " .
+            "ON DUPLICATE KEY UPDATE `value` = :v2"
+        );
+        $stmt->bindValue(':id', self::LOG_IDENTIFIER);
+        $stmt->bindValue(':v', $json);
+        $stmt->bindValue(':v2', $json);
+        $stmt->execute();
     }
 
     private static function cleanupReplayCache(int $now): void
