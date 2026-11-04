@@ -1,3 +1,4 @@
+<?php if (isset($pow_2fa_token)) { include(erLhcoreClassDesign::designtpl('lhpowcaptcha/twofactor_modal.tpl.php')); } ?>
 <?php $recaptchaData = erLhcoreClassPowCaptcha::getRecaptchaSettings(); ?>
 <?php $captchaAction = isset($captchaAction) ? $captchaAction : 'login_action'; ?>
 

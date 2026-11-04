@@ -8,3 +8,8 @@ $ViewList['challenge'] = array(
     'params' => array('action'),
     'uparams' => array()
 );
+
+$ViewList['twofactor'] = array(
+    'params' => array('token'),
+    'uparams' => array()
+);

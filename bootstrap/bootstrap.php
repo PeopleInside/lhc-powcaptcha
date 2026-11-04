@@ -29,6 +29,8 @@ class erLhcoreClassExtensionLhcpowcaptcha
     {
         $classesArray = array(
             'erLhcoreClassPowCaptcha' => 'extension/lhcpowcaptcha/classes/erlhcoreclasspowcaptcha.php',
+            'erLhcoreClassPowMail' => 'extension/lhcpowcaptcha/classes/erlhcoreclasspowmail.php',
+            'erLhcoreClassPowTwoFactor' => 'extension/lhcpowcaptcha/classes/erlhcoreclasspowtwofactor.php',
         );
 
         if (isset($classesArray[$className])) {
@@ -46,6 +48,9 @@ class erLhcoreClassExtensionLhcpowcaptcha
 
             // Hook after successful authentication to record success & alert on new IP
             $dispatcher->listen('user.login_after_success_authenticate', array('erLhcoreClassPowCaptcha', 'onLoginAfterSuccessAuthenticate'));
+
+            // Wrap every outgoing LHC mail (password reminder, transcript, ...) in an HTML layout
+            $dispatcher->listen('chatmail.setup_smtp', array('erLhcoreClassPowMail', 'onSetupSmtp'));
         }
     }
 }

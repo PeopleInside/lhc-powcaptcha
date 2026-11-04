@@ -1,5 +1,17 @@
 <?php
 
+// 2FA pop-up endpoint. It lives in the already registered `challenge` view on purpose:
+// LHC caches the view list of every module.
+if (isset($_POST['pow_2fa_ajax'])) {
+    ob_start();
+    $pow2faResult = erLhcoreClassPowTwoFactor::handleAjax(isset($_POST['token']) ? (string)$_POST['token'] : '', $_POST);
+    while (ob_get_level() > 0) { ob_end_clean(); } // drop PHP notices/warnings that would break the JSON
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store, no-cache, must-revalidate');
+    echo json_encode($pow2faResult);
+    exit;
+}
+
 header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store, no-cache, must-revalidate');
 header('Pragma: no-cache');

@@ -1,4 +1,4 @@
-# lhc-powcaptcha (v1.4.3)
+# lhc-powcaptcha (v1.5.4)
 
 A Live Helper Chat extension that adds a **local Proof-of-Work (PoW) captcha** option for:
 
@@ -19,6 +19,17 @@ When selected and enabled, LHC will:
 - Verify PoW server-side before login/password-reminder processing
 - Reject replayed proofs (session-level and APCu replay protection)
 - Rate-limit challenge generation requests server-side
+
+---
+
+## What's New in Version 1.5.0 (1.5.1: the code is asked in a pop-up on the login page)
+
+- **E-mail two-factor authentication, only for new IPs.** After a correct username/password, if the IP is not yet known for that account a 6-digit code is e-mailed and the operator must enter it on `powcaptcha/twofactor/<token>`. The session is only created after the correct code. Known IPs are learned after each successful login (last 25 per operator). Enable it in `site_admin/system/recaptcha` (works with any captcha provider). If SMTP fails or the operator has no valid e-mail, login proceeds (fail-open) and the event is logged.
+- **Reset known IPs (2FA)** button in the same page: everybody gets the code again at the next login.
+- **HTML e-mails**: the new-IP alert and the 2FA code are HTML. Every core LHC mail whose body is set before SMTP setup (password reminder, chat transcript, FAQ, form notifications, ...) is wrapped in an HTML layout via the `chatmail.setup_smtp` event, plain text kept as fallback. Toggle: "HTML e-mails".
+- The captcha log section now explains that the core page `audit/loginhistory` is separate (this extension does not add buttons there).
+
+Limitations: remember-me cookies, REST API/basic-auth and SSO logins do not go through the 2FA step. Texts are English via the LHC translation system (`pow/twofactor`, `system/recaptcha`).
 
 ---
 

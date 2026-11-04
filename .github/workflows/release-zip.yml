@@ -8,8 +8,6 @@ jobs:
   build-zip:
     name: Build Extension ZIP
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - name: Checkout del repository
         uses: actions/checkout@v4

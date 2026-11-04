@@ -3,7 +3,7 @@
 #[\AllowDynamicProperties]
 class erLhcoreClassPowCaptcha
 {
-    public const VERSION = '1.4.3';
+    public const VERSION = '1.5.4';
 
     private const DEFAULT_DIFFICULTY = 18;
     private const DEFAULT_TTL = 180;
@@ -29,7 +29,7 @@ class erLhcoreClassPowCaptcha
     private const MAX_ADAPTIVE_MAX_BONUS = 8;
     private const FAIL_WINDOW_SECONDS = 900;
     private const FAIL_COUNT_CAP = 1000;
-    private const NO_PENALTY_REASONS = array('validated', 'difficulty_too_low', 'challenge_expired', 'new_ip_login_alert_sent');
+    private const NO_PENALTY_REASONS = array('validated', 'difficulty_too_low', 'challenge_expired', 'new_ip_login_alert_sent', 'two_factor_code_sent', 'two_factor_ok', 'two_factor_mail_failed', 'two_factor_skipped_no_email');
 
     // 24-hour IP penalty for failed credentials (v1.4.3)
     private const DEFAULT_CRED_PENALTY_ENABLED = 1;
@@ -100,6 +100,13 @@ class erLhcoreClassPowCaptcha
         // v1.4.3: New IP email alert settings
         $settings['pow_new_ip_alert'] = isset($settings['pow_new_ip_alert']) ? (((int)$settings['pow_new_ip_alert'] === 1) ? 1 : 0) : self::DEFAULT_NEW_IP_ALERT;
         $settings['pow_new_ip_email'] = isset($settings['pow_new_ip_email']) ? trim((string)$settings['pow_new_ip_email']) : '';
+
+        // v1.5.0: two-factor (new IP only) + HTML mail
+        $settings['pow_2fa'] = (isset($settings['pow_2fa']) && (int)$settings['pow_2fa'] === 1) ? 1 : 0;
+        $settings['pow_2fa_ttl'] = isset($settings['pow_2fa_ttl']) ? max(3, min(30, (int)$settings['pow_2fa_ttl'])) : 10;
+        $settings['pow_2fa_attempts'] = isset($settings['pow_2fa_attempts']) ? max(3, min(10, (int)$settings['pow_2fa_attempts'])) : 5;
+        $settings['pow_max_difficulty'] = isset($settings['pow_max_difficulty']) ? max(14, min(self::MAX_SETTING_DIFFICULTY, (int)$settings['pow_max_difficulty'])) : 20;
+        $settings['pow_html_mail'] = isset($settings['pow_html_mail']) ? (((int)$settings['pow_html_mail'] === 1) ? 1 : 0) : 1;
 
         // Values above MAX_SETTING_DIFFICULTY cannot be solved by a browser within the TTL.
         if ($settings['pow_difficulty'] < self::MIN_DIFFICULTY || $settings['pow_difficulty'] > self::MAX_SETTING_DIFFICULTY) {
@@ -459,7 +466,9 @@ class erLhcoreClassPowCaptcha
             $bonus += $credBonus;
         }
 
-        return min(self::MAX_SETTING_DIFFICULTY, $base + max(0, $bonus));
+        // Penalties never push the work above the admin-defined ceiling (default 20 bits), but never below the base difficulty
+        $ceiling = isset($settings['pow_max_difficulty']) ? (int)$settings['pow_max_difficulty'] : self::MAX_SETTING_DIFFICULTY;
+        return max($base, min($ceiling, self::MAX_SETTING_DIFFICULTY, $base + max(0, $bonus)));
     }
 
     public static function getRecentFailureCount(?string $clientIp = null): int
@@ -749,12 +758,24 @@ class erLhcoreClassPowCaptcha
      * Hook triggered by LHC event 'user.login_after_success_authenticate'.
      * Called when the operator credentials were valid and login succeeded.
      */
-    public static function onLoginAfterSuccessAuthenticate($params): void
+    public static function onLoginAfterSuccessAuthenticate($params)
     {
         self::$loginAttemptSucceeded = true;
 
         $currentUser = isset($params['current_user']) ? $params['current_user'] : \erLhcoreClassUser::instance();
         $ip = self::$pendingClientIp ?: self::getClientIp();
+
+        // Correct credentials: the IP is not brute-forcing, drop its captcha penalty
+        if ($ip !== '') {
+            self::removeIpPenalty($ip);
+        }
+
+        // v1.5.0: two-factor code is required only when the IP is new for this account (exits when triggered)
+        // The login page is re-rendered by the core with a pop-up asking for the code.
+        $tpl = isset($params['tpl']) ? $params['tpl'] : null;
+        if (erLhcoreClassPowTwoFactor::maybeChallenge($currentUser, $ip, $tpl)) {
+            return array('status' => \erLhcoreClassChatEventDispatcher::STOP_WORKFLOW);
+        }
 
         // Check and send new IP email notification if configured
         self::handleNewIpCheck($currentUser, $ip);
@@ -788,7 +809,7 @@ class erLhcoreClassPowCaptcha
     {
         try {
             $settings = self::getRecaptchaSettings();
-            if ((int)$settings['pow_new_ip_alert'] !== 1 || $ip === '') {
+            if (((int)$settings['pow_new_ip_alert'] !== 1 && (int)$settings['pow_2fa'] !== 1) || $ip === '') {
                 return;
             }
 
@@ -809,22 +830,11 @@ class erLhcoreClassPowCaptcha
                 return;
             }
 
-            $known = self::readKnownIps();
-            $userKey = 'u_' . $userId;
-            $userIps = isset($known[$userKey]) && is_array($known[$userKey]) ? $known[$userKey] : array();
+            $isNewIp = self::rememberIp($userId, $ip);
 
-            $isNewIp = !isset($userIps[$ip]);
-
-            // Update known IPs for this user
-            $userIps[$ip] = time();
-            if (count($userIps) > self::MAX_KNOWN_IPS_PER_USER) {
-                asort($userIps, SORT_NUMERIC);
-                while (count($userIps) > self::MAX_KNOWN_IPS_PER_USER) {
-                    array_shift($userIps);
-                }
+            if ($isNewIp && (int)$settings['pow_new_ip_alert'] !== 1) {
+                return;
             }
-            $known[$userKey] = $userIps;
-            self::writeKnownIps($known);
 
             if ($isNewIp) {
                 self::sendNewIpNotificationEmail($userEmail, $userName, $ip);
@@ -839,6 +849,42 @@ class erLhcoreClassPowCaptcha
         } catch (\Throwable $e) {
             error_log('lhc_powcaptcha handle_new_ip_failed: ' . $e->getMessage());
         }
+    }
+
+    public static function isIpKnown(int $userId, string $ip): bool
+    {
+        $known = self::readKnownIps();
+        return isset($known['u_' . $userId][$ip]);
+    }
+
+    /** Stores the IP as known for the user. Returns true when the IP was new. */
+    public static function rememberIp(int $userId, string $ip): bool
+    {
+        $known = self::readKnownIps();
+        $userKey = 'u_' . $userId;
+        $userIps = isset($known[$userKey]) && is_array($known[$userKey]) ? $known[$userKey] : array();
+        $isNew = !isset($userIps[$ip]);
+        $userIps[$ip] = time();
+        if (count($userIps) > self::MAX_KNOWN_IPS_PER_USER) {
+            asort($userIps, SORT_NUMERIC);
+            while (count($userIps) > self::MAX_KNOWN_IPS_PER_USER) {
+                array_shift($userIps);
+            }
+        }
+        $known[$userKey] = $userIps;
+        self::writeKnownIps($known);
+        return $isNew;
+    }
+
+    public static function countKnownIpUsers(): int
+    {
+        return count(self::readKnownIps());
+    }
+
+    /** After this every operator will be asked for the 2FA code at the next login. */
+    public static function clearKnownIps(): void
+    {
+        self::writeKnownIps(array());
     }
 
     public static function sendNewIpNotificationEmail(string $userEmail, string $userName, string $ip): bool
@@ -856,24 +902,25 @@ class erLhcoreClassPowCaptcha
         }
 
         $dateStr = date('Y-m-d H:i:s T');
-        $userAgent = isset($_SERVER['HTTP_USER_AGENT']) ? (string)$_SERVER['HTTP_USER_AGENT'] : 'Unknown';
+        $userAgent = isset($_SERVER['HTTP_USER_AGENT']) ? substr(preg_replace('/[^\x20-\x7E]/', '', (string)$_SERVER['HTTP_USER_AGENT']), 0, 200) : 'Unknown';
 
         $subject = sprintf('[%s] Security Alert: Login from new IP address (%s)', $siteTitle, $userName);
 
-        $body = "Hello,\n\n" .
-            "A successful login to your Live Helper Chat account has been detected from a new IP address.\n\n" .
-            "Account: " . $userName . "\n" .
-            "IP Address: " . $ip . "\n" .
-            "Date & Time: " . $dateStr . "\n" .
-            "User Agent: " . $userAgent . "\n\n" .
+        $body = "A successful login to your Live Helper Chat account has been detected from a new IP address.\n\n" .
+            "Account: " . $userName . "\nIP Address: " . $ip . "\nDate & Time: " . $dateStr . "\nUser Agent: " . $userAgent . "\n\n" .
             "If this was you, you can safely ignore this notification.\n" .
             "If you did NOT perform this login, please immediately change your password or contact your system administrator.\n\n" .
-            "--\n" . $siteTitle . " Security System";
+            "-- " . $siteTitle . " Security System";
 
-        return self::sendMail($targetEmail, $subject, $body);
+        $html = '<p>A successful login to your Live Helper Chat account has been detected from a <b>new IP address</b>.</p>'
+            . erLhcoreClassPowMail::infoTable(array('Account' => $userName, 'IP address' => $ip, 'Date & time' => $dateStr, 'Browser' => $userAgent))
+            . '<p>If this was you, you can safely ignore this notification.</p>'
+            . '<p style="color:#c53030;">If you did <b>not</b> perform this login, change your password immediately or contact your system administrator.</p>';
+
+        return self::sendMail($targetEmail, $subject, $body, erLhcoreClassPowMail::layout('Login from a new IP address', $html, 'New login detected for ' . $userName));
     }
 
-    public static function sendMail(string $toEmail, string $subject, string $body): bool
+    public static function sendMail(string $toEmail, string $subject, string $body, ?string $html = null): bool
     {
         try {
             if (class_exists('PHPMailer\\PHPMailer\\PHPMailer')) {
@@ -883,8 +930,13 @@ class erLhcoreClassPowCaptcha
                 }
                 $mail->CharSet = 'UTF-8';
                 $mail->Subject = $subject;
-                $mail->Body = $body;
-                $mail->AltBody = strip_tags($body);
+                if ($html !== null) {
+                    $mail->isHTML(true);
+                    $mail->Body = $html;
+                    $mail->AltBody = $body;
+                } else {
+                    $mail->Body = $body;
+                }
                 $mail->addAddress($toEmail);
                 return (bool)$mail->send();
             }
@@ -896,8 +948,13 @@ class erLhcoreClassPowCaptcha
                 }
                 $mail->CharSet = 'UTF-8';
                 $mail->Subject = $subject;
-                $mail->Body = $body;
-                $mail->AltBody = strip_tags($body);
+                if ($html !== null) {
+                    $mail->IsHTML(true);
+                    $mail->Body = $html;
+                    $mail->AltBody = $body;
+                } else {
+                    $mail->Body = $body;
+                }
                 $mail->AddAddress($toEmail);
                 return (bool)$mail->Send();
             }
@@ -905,7 +962,9 @@ class erLhcoreClassPowCaptcha
             $sender = 'no-reply@' . ($_SERVER['HTTP_HOST'] ?? 'localhost');
             $headers = "From: " . $sender . "\r\n" .
                        "Reply-To: " . $sender . "\r\n" .
-                       "Content-Type: text/plain; charset=UTF-8\r\n";
+                       "MIME-Version: 1.0\r\n" .
+                       "Content-Type: " . ($html !== null ? 'text/html' : 'text/plain') . "; charset=UTF-8\r\n";
+            $body = $html !== null ? $html : $body;
 
             return @mail($toEmail, $subject, $body, $headers);
         } catch (\Throwable $e) {
@@ -914,7 +973,7 @@ class erLhcoreClassPowCaptcha
         }
     }
 
-    private static function readKnownIps(): array
+    public static function readKnownIps(): array
     {
         try {
             $stmt = \ezcDbInstance::get()->prepare('SELECT `value` FROM `lh_chat_config` WHERE `identifier` = :id');
@@ -933,7 +992,7 @@ class erLhcoreClassPowCaptcha
         }
     }
 
-    private static function writeKnownIps(array $known): void
+    public static function writeKnownIps(array $known): void
     {
         try {
             $json = json_encode($known);

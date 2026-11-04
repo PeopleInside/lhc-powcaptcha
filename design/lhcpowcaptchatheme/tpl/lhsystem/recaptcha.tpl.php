@@ -129,6 +129,37 @@
             <input type="email" class="form-control" name="pow_new_ip_email" value="<?php echo isset($rc_data['pow_new_ip_email']) ? htmlspecialchars($rc_data['pow_new_ip_email']) : ''?>" placeholder="admin@example.com" />
             <small class="form-text text-muted"><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','If left blank, the alert is sent directly to the email of the operator whose account was accessed.');?></small>
         </div>
+        <div class="form-group">
+            <label><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Maximum difficulty after penalties (14-22 bits)');?></label>
+            <input type="number" min="14" max="22" step="1" class="form-control" name="pow_max_difficulty" value="<?php echo isset($rc_data['pow_max_difficulty']) ? (int)$rc_data['pow_max_difficulty'] : 20?>" />
+            <small class="form-text text-muted"><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Failed logins and captcha failures raise the difficulty, but never above this value. Each extra bit doubles the solving time: 22 bits can take minutes in a browser, 20 bits is about four times faster.');?></small>
+        </div>
+    </div>
+
+    <hr />
+    <h5 class="text-primary"><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Two-factor authentication (e-mail code)');?></h5>
+
+    <div class="form-group">
+        <label><input type="checkbox" value="on" name="pow_2fa" <?php (!empty($rc_data['pow_2fa'])) ? print 'checked="checked"' : ''?> /> <?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Require an e-mail code when an operator logs in from a new IP address');?></label>
+        <small class="form-text text-muted"><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','The code is requested only after a correct username and password, and only from an IP not yet known for that account. Known IPs are learned after each successful login. If SMTP fails or the operator has no valid e-mail, login proceeds without 2FA.');?></small>
+    </div>
+
+    <div class="row">
+        <div class="col-md-6 form-group">
+            <label><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Code validity in minutes (3-30)');?></label>
+            <input type="number" min="3" max="30" class="form-control" name="pow_2fa_ttl" value="<?php echo isset($rc_data['pow_2fa_ttl']) ? (int)$rc_data['pow_2fa_ttl'] : 10?>" />
+        </div>
+        <div class="col-md-6 form-group">
+            <label><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Max wrong codes before restart (3-10)');?></label>
+            <input type="number" min="3" max="10" class="form-control" name="pow_2fa_attempts" value="<?php echo isset($rc_data['pow_2fa_attempts']) ? (int)$rc_data['pow_2fa_attempts'] : 5?>" />
+        </div>
+    </div>
+
+    <hr />
+    <h5 class="text-primary"><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','HTML e-mails');?></h5>
+    <div class="form-group">
+        <label><input type="checkbox" value="on" name="pow_html_mail" <?php (!isset($rc_data['pow_html_mail']) || $rc_data['pow_html_mail'] == 1) ? print 'checked="checked"' : ''?> /> <?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Send Live Helper Chat e-mails (password reminder, chat transcript, notifications) as formatted HTML');?></label>
+        <small class="form-text text-muted"><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Plain-text version is always attached as fallback. A few core notifications that fill the body after SMTP setup (unaccepted chat, visitor returned) stay as they are.');?></small>
     </div>
 
     <script>
@@ -236,6 +267,17 @@
 
 <hr />
 
+
+<?php if (isset($known_ips_cleared)) : $msg = erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Known IPs cleared. Every operator will receive a 2FA code at the next login.'); ?>
+    <?php include(erLhcoreClassDesign::designtpl('lhkernel/alert_success.tpl.php'));?>
+<?php endif; ?>
+
+<form action="" method="post" ng-non-bindable class="mb-4" onsubmit="return confirm(<?php echo htmlspecialchars(json_encode(erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Forget all known IPs? Every operator will be asked for a 2FA code at the next login.')), ENT_QUOTES)?>);">
+    <?php include(erLhcoreClassDesign::designtpl('lhkernel/csfr_token.tpl.php'));?>
+    <p class="text-muted small mb-1"><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Accounts with known IPs:');?> <b><?php echo (int)$known_ips_users?></b></p>
+    <input type="submit" class="btn btn-warning btn-sm" name="ResetKnownIps" value="<?php echo htmlspecialchars(erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Reset known IPs (2FA)'))?>" />
+</form>
+
 <!-- =========================================================================
      Last Captcha Attempts Log Section
      ========================================================================= -->
@@ -244,6 +286,12 @@
 <?php if (isset($log_cleared) && $log_cleared === true) : $msg = erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Attempt log cleared'); ?>
     <?php include(erLhcoreClassDesign::designtpl('lhkernel/alert_success.tpl.php'));?>
 <?php endif; ?>
+
+<div class="alert alert-info small">
+    <?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','This log only contains captcha / 2FA events of this extension. Clearing it does not touch the core operators login history, which is a separate page:');?>
+    <a href="<?php echo erLhcoreClassDesign::baseurl('audit/loginhistory')?>"><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Login history');?></a>.
+    <?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','To reset IP restrictions use "Clear all limited IPs" above; to make 2FA ask for the code again use "Reset known IPs (2FA)".');?>
+</div>
 
 <p class="text-muted small">
     <?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Shows the last attempts (newest first) including bad credentials and security alert dispatches. IP address and user agent are stored for security purposes only; use the button below to delete them.');?>
@@ -291,6 +339,8 @@
                     <span class="badge badge-warning bg-warning text-dark">bad_credentials (login failed)</span>
                 <?php elseif ($powRow['r'] === 'new_ip_login_alert_sent') : ?>
                     <span class="badge badge-info bg-info text-white">new_ip_alert_sent</span>
+                <?php elseif (strpos($powRow['r'], 'two_factor_') === 0) : ?>
+                    <span class="badge badge-primary bg-primary text-white"><?php echo htmlspecialchars($powRow['r'])?></span>
                 <?php else : ?>
                     <code><?php echo htmlspecialchars($powRow['r'])?></code>
                 <?php endif; ?>
