@@ -3,10 +3,12 @@
 #[\AllowDynamicProperties]
 class erLhcoreClassPowCaptcha
 {
+    public const VERSION = '1.4.3';
+
     private const DEFAULT_DIFFICULTY = 18;
     private const DEFAULT_TTL = 180;
     private const MIN_DIFFICULTY = 12;
-    private const MAX_DIFFICULTY = 26;       // protocol limit accepted when verifying
+    private const MAX_DIFFICULTY = 26;         // protocol limit accepted when verifying
     private const MAX_SETTING_DIFFICULTY = 22; // highest value an admin can set / that is ever issued
     private const DEFAULT_HONEYPOT = 1;
     private const HONEYPOT_FIELD = 'contact_website';
@@ -21,21 +23,39 @@ class erLhcoreClassPowCaptcha
     private const BINDING_COOKIE_TTL = 86400;
     private const DEFAULT_ALLOWED_ACTIONS = array('login_action', 'forgot_password_action');
 
-    // Adaptive difficulty: every recent captcha failure from the same IP / session adds +1 bit.
+    // Adaptive difficulty (short-term captcha failures): every recent captcha failure adds +1 bit.
     private const DEFAULT_ADAPTIVE = 1;
     private const DEFAULT_ADAPTIVE_MAX_BONUS = 4;
     private const MAX_ADAPTIVE_MAX_BONUS = 8;
     private const FAIL_WINDOW_SECONDS = 900;
     private const FAIL_COUNT_CAP = 1000;
-    private const NO_PENALTY_REASONS = array('validated', 'difficulty_too_low', 'challenge_expired');
+    private const NO_PENALTY_REASONS = array('validated', 'difficulty_too_low', 'challenge_expired', 'new_ip_login_alert_sent');
+
+    // 24-hour IP penalty for failed credentials (v1.4.3)
+    private const DEFAULT_CRED_PENALTY_ENABLED = 1;
+    private const DEFAULT_CRED_PENALTY_HOURS = 24;
+    private const IP_PENALTIES_IDENTIFIER = 'powcaptcha_ip_penalties';
+    private const MAX_STORED_LIMITED_IPS = 200;
+
+    // New IP email alert (v1.4.3)
+    private const DEFAULT_NEW_IP_ALERT = 1;
+    private const KNOWN_IPS_IDENTIFIER = 'powcaptcha_known_ips';
+    private const MAX_KNOWN_IPS_PER_USER = 25;
 
     // Attempt log (stored in lh_chat_config, hidden row).
     private const LOG_IDENTIFIER = 'powcaptcha_attempt_log';
-    private const LOG_MAX_ENTRIES = 30;
+    private const LOG_MAX_ENTRIES = 50;
     private const LOG_MAX_BYTES = 60000;
-    private const LOG_WRITE_RL_PER_MINUTE = 20;
+    private const LOG_WRITE_RL_PER_MINUTE = 30;
 
     private static bool $apcuMissingLogged = false;
+
+    // In-request state for detecting failed login credentials
+    private static bool $loginAttemptStarted = false;
+    private static bool $loginAttemptSucceeded = false;
+    private static ?string $pendingClientIp = null;
+    private static ?string $pendingUsername = null;
+    private static bool $shutdownHandlerRegistered = false;
 
     public static function getRecaptchaSettings(): array
     {
@@ -73,6 +93,14 @@ class erLhcoreClassPowCaptcha
 
         $settings['pow_honeypot'] = isset($settings['pow_honeypot']) ? (((int)$settings['pow_honeypot'] === 1) ? 1 : 0) : self::DEFAULT_HONEYPOT;
 
+        // v1.4.3: 24h credential penalty settings
+        $settings['pow_cred_penalty'] = isset($settings['pow_cred_penalty']) ? (((int)$settings['pow_cred_penalty'] === 1) ? 1 : 0) : self::DEFAULT_CRED_PENALTY_ENABLED;
+        $settings['pow_cred_penalty_hours'] = isset($settings['pow_cred_penalty_hours']) ? max(1, min(168, (int)$settings['pow_cred_penalty_hours'])) : self::DEFAULT_CRED_PENALTY_HOURS;
+
+        // v1.4.3: New IP email alert settings
+        $settings['pow_new_ip_alert'] = isset($settings['pow_new_ip_alert']) ? (((int)$settings['pow_new_ip_alert'] === 1) ? 1 : 0) : self::DEFAULT_NEW_IP_ALERT;
+        $settings['pow_new_ip_email'] = isset($settings['pow_new_ip_email']) ? trim((string)$settings['pow_new_ip_email']) : '';
+
         // Values above MAX_SETTING_DIFFICULTY cannot be solved by a browser within the TTL.
         if ($settings['pow_difficulty'] < self::MIN_DIFFICULTY || $settings['pow_difficulty'] > self::MAX_SETTING_DIFFICULTY) {
             $settings['pow_difficulty'] = self::DEFAULT_DIFFICULTY;
@@ -105,7 +133,6 @@ class erLhcoreClassPowCaptcha
             return false;
         }
 
-        // The extension can be loaded but switched off (apc.enabled=0, CLI, ...).
         if (function_exists('apcu_enabled')) {
             return (bool)apcu_enabled();
         }
@@ -178,8 +205,7 @@ class erLhcoreClassPowCaptcha
         // Difficulty required right now (before this attempt can change it); stored in the log.
         $requiredNow = self::getEffectiveDifficulty();
 
-        // Honeypot: a field invisible to humans. Anything in it means an automated form filler.
-        // Checked first and cheaply, without consuming the proof.
+        // Honeypot check: invisible trap for automated form fillers
         if ((int)self::getRecaptchaSettings()['pow_honeypot'] === 1 && isset($postData[self::HONEYPOT_FIELD])
             && (!is_scalar($postData[self::HONEYPOT_FIELD]) || trim((string)$postData[self::HONEYPOT_FIELD]) !== '')) {
             $reason = 'honeypot_triggered';
@@ -265,10 +291,11 @@ class erLhcoreClassPowCaptcha
             return false;
         }
 
-        // A challenge issued while the client had no recent failures must not be usable after
-        // failures were recorded (prevents stockpiling "easy" challenges and using them later).
+        // Adaptive difficulty & 24h penalty enforcement:
+        // A challenge issued before recent failures cannot be used after failures were recorded.
         $settingsNow = self::getRecaptchaSettings();
-        if ((int)$settingsNow['pow_adaptive'] === 1 && $difficulty < self::getEffectiveDifficulty($settingsNow)) {
+        if (((int)$settingsNow['pow_adaptive'] === 1 || (int)$settingsNow['pow_cred_penalty'] === 1)
+            && $difficulty < self::getEffectiveDifficulty($settingsNow)) {
             $reason = 'difficulty_too_low';
             return false;
         }
@@ -305,9 +332,6 @@ class erLhcoreClassPowCaptcha
             return false;
         }
 
-        // APCu-backed cross-session replay detection (defense-in-depth when APCu is available).
-        // This supplements the session check and catches replays across nodes that share APCu
-        // (e.g. single-server setups) even if session storage is not shared.
         $apcuReplayKey = null;
         if (self::isApcuAvailable() && function_exists('apcu_add')) {
             $apcuReplayKey = 'lhc_powcaptcha_u_' . $proofHash;
@@ -323,9 +347,6 @@ class erLhcoreClassPowCaptcha
             return false;
         }
 
-        // apcu_add() is atomic: of two concurrent requests carrying the same proof only one wins.
-        // add() can also fail for reasons other than "key exists" (cache full): only a key that
-        // really exists is a replay, otherwise fall back to the session check alone.
         if ($apcuReplayKey !== null && !apcu_add($apcuReplayKey, 1, max(1, $expiry - $now) + 5) && apcu_exists($apcuReplayKey)) {
             $reason = 'replay_detected';
             self::logSecurityEvent('replay_detected', ['action' => $action, 'store' => 'apcu']);
@@ -409,32 +430,39 @@ class erLhcoreClassPowCaptcha
     }
 
     // ------------------------------------------------------------------
-    // Adaptive difficulty
+    // Effective Difficulty Calculation (combines base, 15m fail, and 24h IP penalty)
     // ------------------------------------------------------------------
 
     /**
-     * Difficulty to issue / require right now: base difficulty plus one bit for every recent
-     * captcha failure of this IP (APCu) or this session, capped by "pow_adaptive_max_bonus"
-     * and by MAX_SETTING_DIFFICULTY (22: above that real browsers cannot finish within the TTL).
+     * Calculates the difficulty required right now:
+     * - Base difficulty (pow_difficulty, default 18)
+     * - Plus 15-minute captcha failure bonus (pow_adaptive)
+     * - Plus 24-hour credential failure bonus for this IP (pow_cred_penalty)
+     * All capped at MAX_SETTING_DIFFICULTY (22 bits).
      */
-    public static function getEffectiveDifficulty(?array $settings = null): int
+    public static function getEffectiveDifficulty(?array $settings = null, ?string $clientIp = null): int
     {
         if ($settings === null) {
             $settings = self::getRecaptchaSettings();
         }
 
         $base = (int)$settings['pow_difficulty'];
+        $bonus = 0;
 
-        if ((int)$settings['pow_adaptive'] !== 1) {
-            return $base;
+        if ((int)$settings['pow_adaptive'] === 1) {
+            $shortTermFailures = self::getRecentFailureCount($clientIp);
+            $bonus += min((int)$settings['pow_adaptive_max_bonus'], $shortTermFailures);
         }
 
-        $bonus = min((int)$settings['pow_adaptive_max_bonus'], self::getRecentFailureCount());
+        if ((int)$settings['pow_cred_penalty'] === 1) {
+            $credBonus = self::getIpPenaltyBonus($clientIp);
+            $bonus += $credBonus;
+        }
 
         return min(self::MAX_SETTING_DIFFICULTY, $base + max(0, $bonus));
     }
 
-    public static function getRecentFailureCount(): int
+    public static function getRecentFailureCount(?string $clientIp = null): int
     {
         $now = time();
         $count = 0;
@@ -446,7 +474,7 @@ class erLhcoreClassPowCaptcha
             }
         }
 
-        $ipKey = self::getFailureIpKey();
+        $ipKey = self::getFailureIpKey($clientIp);
         if ($ipKey !== null) {
             $data = apcu_fetch($ipKey, $exists);
             if ($exists && is_array($data) && isset($data['l'], $data['c']) && ($now - (int)$data['l']) <= self::FAIL_WINDOW_SECONDS) {
@@ -481,25 +509,456 @@ class erLhcoreClassPowCaptcha
         }
     }
 
-    private static function getFailureIpKey(): ?string
+    private static function getFailureIpKey(?string $ip = null): ?string
     {
         if (!self::isApcuAvailable()) {
             return null;
         }
 
-        $ip = self::getClientIp();
+        $ip = ($ip !== null && $ip !== '') ? $ip : self::getClientIp();
 
         return ($ip !== '') ? 'lhc_powcaptcha_fail_' . hash('sha256', $ip) : null;
     }
 
     // ------------------------------------------------------------------
-    // Attempt log (last LOG_MAX_ENTRIES attempts, newest first)
+    // v1.4.3 Feature: 24h IP Penalty for Failed Login Credentials
     // ------------------------------------------------------------------
 
     /**
-     * Called after every PoW verification. Never throws: a logging problem must not break login.
+     * Returns the extra difficulty bits incurred by this IP due to failed login credentials
+     * within the configured window (default 24 hours).
      */
-    public static function recordAttempt(string $action, bool $ok, string $reason, int $difficulty): void
+    public static function getIpPenaltyBonus(?string $clientIp = null): int
+    {
+        $ip = ($clientIp !== null && $clientIp !== '') ? $clientIp : self::getClientIp();
+        if ($ip === '') {
+            return 0;
+        }
+
+        $penaltyData = self::getIpPenaltyData($ip);
+        if ($penaltyData === null || !isset($penaltyData['expires_at']) || (int)$penaltyData['expires_at'] < time()) {
+            return 0;
+        }
+
+        $count = isset($penaltyData['count']) ? (int)$penaltyData['count'] : 0;
+        // Each failed login attempt adds +1 difficulty bit, capped so total difficulty won't exceed MAX_SETTING_DIFFICULTY
+        return max(0, min(6, $count));
+    }
+
+    public static function getIpPenaltyData(string $ip): ?array
+    {
+        if ($ip === '') {
+            return null;
+        }
+
+        // Try APCu first for speed
+        if (self::isApcuAvailable()) {
+            $apcuKey = 'lhc_powcaptcha_pen_' . hash('sha256', $ip);
+            $cached = apcu_fetch($apcuKey, $exists);
+            if ($exists && is_array($cached)) {
+                return $cached;
+            }
+        }
+
+        // Check persistent store
+        $all = self::readAllIpPenalties();
+        if (isset($all[$ip]) && is_array($all[$ip])) {
+            $entry = $all[$ip];
+            if (isset($entry['expires_at']) && (int)$entry['expires_at'] > time()) {
+                if (self::isApcuAvailable()) {
+                    $ttl = max(1, (int)$entry['expires_at'] - time());
+                    apcu_store('lhc_powcaptcha_pen_' . hash('sha256', $ip), $entry, $ttl);
+                }
+                return $entry;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Registers a failed credential login for the given IP address,
+     * extending or increasing the penalty for at least 24 hours.
+     */
+    public static function recordFailedCredentialAttempt(string $ip, string $username = ''): void
+    {
+        if ($ip === '' || filter_var($ip, FILTER_VALIDATE_IP) === false) {
+            return;
+        }
+
+        $settings = self::getRecaptchaSettings();
+        $hours = (int)$settings['pow_cred_penalty_hours'];
+        $penaltyDuration = $hours * 3600;
+        $now = time();
+        $expiresAt = $now + $penaltyDuration;
+
+        $all = self::readAllIpPenalties();
+
+        $existing = isset($all[$ip]) && is_array($all[$ip]) ? $all[$ip] : null;
+        $count = ($existing && isset($existing['count'])) ? (int)$existing['count'] + 1 : 1;
+        $firstFailedAt = ($existing && isset($existing['first_at'])) ? (int)$existing['first_at'] : $now;
+
+        $entry = array(
+            'ip' => $ip,
+            'count' => $count,
+            'bonus' => min(6, $count),
+            'first_at' => $firstFailedAt,
+            'last_at' => $now,
+            'expires_at' => $expiresAt,
+            'user' => substr($username, 0, 50),
+        );
+
+        $all[$ip] = $entry;
+
+        // Cleanup expired entries and cap total list size
+        foreach ($all as $k => $v) {
+            if (!isset($v['expires_at']) || (int)$v['expires_at'] < $now) {
+                unset($all[$k]);
+            }
+        }
+
+        if (count($all) > self::MAX_STORED_LIMITED_IPS) {
+            uasort($all, fn($a, $b) => ($b['last_at'] ?? 0) <=> ($a['last_at'] ?? 0));
+            $all = array_slice($all, 0, self::MAX_STORED_LIMITED_IPS, true);
+        }
+
+        self::writeAllIpPenalties($all);
+
+        if (self::isApcuAvailable()) {
+            apcu_store('lhc_powcaptcha_pen_' . hash('sha256', $ip), $entry, $penaltyDuration);
+        }
+
+        // Record in security log and attempt log
+        self::logSecurityEvent('login_failed_credentials', [
+            'user' => substr($username, 0, 32),
+            'penalty_count' => $count,
+            'expires_in_hours' => $hours,
+        ]);
+
+        $difficultyNow = self::getEffectiveDifficulty($settings, $ip);
+        self::recordAttempt('login_action', false, 'bad_credentials', $difficultyNow, $username);
+    }
+
+    public static function removeIpPenalty(string $ip): bool
+    {
+        $all = self::readAllIpPenalties();
+        if (isset($all[$ip])) {
+            unset($all[$ip]);
+            self::writeAllIpPenalties($all);
+
+            if (self::isApcuAvailable()) {
+                apcu_delete('lhc_powcaptcha_pen_' . hash('sha256', $ip));
+            }
+            return true;
+        }
+        return false;
+    }
+
+    public static function clearAllIpPenalties(): void
+    {
+        self::writeAllIpPenalties(array());
+
+        $stmt = \ezcDbInstance::get()->prepare('DELETE FROM `lh_chat_config` WHERE `identifier` = :id');
+        $stmt->bindValue(':id', self::IP_PENALTIES_IDENTIFIER);
+        $stmt->execute();
+    }
+
+    /**
+     * @return array[] List of limited IPs with active penalties, newest first.
+     */
+    public static function getLimitedIpsList(): array
+    {
+        $now = time();
+        $all = self::readAllIpPenalties();
+        $active = array();
+
+        foreach ($all as $ip => $data) {
+            if (isset($data['expires_at']) && (int)$data['expires_at'] > $now) {
+                $active[] = $data;
+            }
+        }
+
+        uasort($active, fn($a, $b) => ($b['last_at'] ?? 0) <=> ($a['last_at'] ?? 0));
+        return array_values($active);
+    }
+
+    private static function readAllIpPenalties(): array
+    {
+        try {
+            $stmt = \ezcDbInstance::get()->prepare('SELECT `value` FROM `lh_chat_config` WHERE `identifier` = :id');
+            $stmt->bindValue(':id', self::IP_PENALTIES_IDENTIFIER);
+            $stmt->execute();
+            $raw = $stmt->fetchColumn();
+
+            if (!is_string($raw) || $raw === '') {
+                return array();
+            }
+
+            $decoded = json_decode($raw, true);
+            return is_array($decoded) ? $decoded : array();
+        } catch (\Throwable $e) {
+            error_log('lhc_powcaptcha read_penalties_failed: ' . $e->getMessage());
+            return array();
+        }
+    }
+
+    private static function writeAllIpPenalties(array $penalties): void
+    {
+        try {
+            $json = json_encode($penalties);
+            if ($json === false) {
+                return;
+            }
+
+            $stmt = \ezcDbInstance::get()->prepare(
+                "INSERT INTO `lh_chat_config` (`identifier`, `value`, `type`, `explain`, `hidden`) VALUES (:id, :v, 0, '', 1) " .
+                "ON DUPLICATE KEY UPDATE `value` = :v2"
+            );
+            $stmt->bindValue(':id', self::IP_PENALTIES_IDENTIFIER);
+            $stmt->bindValue(':v', $json);
+            $stmt->bindValue(':v2', $json);
+            $stmt->execute();
+        } catch (\Throwable $e) {
+            error_log('lhc_powcaptcha write_penalties_failed: ' . $e->getMessage());
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // v1.4.3 Feature: Login Lifecycle Hooks & Detection
+    // ------------------------------------------------------------------
+
+    /**
+     * Hook triggered by LHC event 'user.login_before_authenticate'.
+     * Called right before $currentUser->authenticate(...) runs in modules/lhuser/login.php.
+     */
+    public static function onLoginBeforeAuthenticate($params): void
+    {
+        self::$loginAttemptStarted = true;
+        self::$loginAttemptSucceeded = false;
+        self::$pendingClientIp = self::getClientIp();
+        self::$pendingUsername = isset($_POST['Username']) ? trim((string)$_POST['Username']) : '';
+
+        // Register shutdown function to verify whether authentication succeeded or failed
+        if (!self::$shutdownHandlerRegistered) {
+            self::$shutdownHandlerRegistered = true;
+            register_shutdown_function(array(__CLASS__, 'onShutdownCheckLoginFailure'));
+        }
+    }
+
+    /**
+     * Hook triggered by LHC event 'user.login_after_success_authenticate'.
+     * Called when the operator credentials were valid and login succeeded.
+     */
+    public static function onLoginAfterSuccessAuthenticate($params): void
+    {
+        self::$loginAttemptSucceeded = true;
+
+        $currentUser = isset($params['current_user']) ? $params['current_user'] : \erLhcoreClassUser::instance();
+        $ip = self::$pendingClientIp ?: self::getClientIp();
+
+        // Check and send new IP email notification if configured
+        self::handleNewIpCheck($currentUser, $ip);
+    }
+
+    /**
+     * Shutdown handler: checks if a login attempt started but failed to authenticate.
+     */
+    public static function onShutdownCheckLoginFailure(): void
+    {
+        if (self::$loginAttemptStarted && !self::$loginAttemptSucceeded) {
+            // Check if user actually logged in through any other path
+            if (class_exists('erLhcoreClassUser') && \erLhcoreClassUser::instance()->isLogged()) {
+                return;
+            }
+
+            $ip = self::$pendingClientIp ?: self::getClientIp();
+            $username = self::$pendingUsername ?: '';
+
+            if ($ip !== '') {
+                self::recordFailedCredentialAttempt($ip, $username);
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // v1.4.3 Feature: New IP Login Detection and Email Alert
+    // ------------------------------------------------------------------
+
+    public static function handleNewIpCheck($currentUser, string $ip): void
+    {
+        try {
+            $settings = self::getRecaptchaSettings();
+            if ((int)$settings['pow_new_ip_alert'] !== 1 || $ip === '') {
+                return;
+            }
+
+            $userId = null;
+            $userEmail = '';
+            $userName = '';
+
+            if (is_object($currentUser) && method_exists($currentUser, 'getUserData')) {
+                $userData = $currentUser->getUserData();
+                if (is_object($userData)) {
+                    $userId = isset($userData->id) ? (int)$userData->id : null;
+                    $userEmail = isset($userData->email) ? (string)$userData->email : '';
+                    $userName = isset($userData->username) ? (string)$userData->username : '';
+                }
+            }
+
+            if ($userId === null) {
+                return;
+            }
+
+            $known = self::readKnownIps();
+            $userKey = 'u_' . $userId;
+            $userIps = isset($known[$userKey]) && is_array($known[$userKey]) ? $known[$userKey] : array();
+
+            $isNewIp = !isset($userIps[$ip]);
+
+            // Update known IPs for this user
+            $userIps[$ip] = time();
+            if (count($userIps) > self::MAX_KNOWN_IPS_PER_USER) {
+                asort($userIps, SORT_NUMERIC);
+                while (count($userIps) > self::MAX_KNOWN_IPS_PER_USER) {
+                    array_shift($userIps);
+                }
+            }
+            $known[$userKey] = $userIps;
+            self::writeKnownIps($known);
+
+            if ($isNewIp) {
+                self::sendNewIpNotificationEmail($userEmail, $userName, $ip);
+
+                // Log the new IP event
+                self::recordAttempt('login_action', true, 'new_ip_login_alert_sent', self::getEffectiveDifficulty($settings, $ip), $userName);
+                self::logSecurityEvent('new_ip_login', [
+                    'user' => $userName,
+                    'user_id' => $userId,
+                ]);
+            }
+        } catch (\Throwable $e) {
+            error_log('lhc_powcaptcha handle_new_ip_failed: ' . $e->getMessage());
+        }
+    }
+
+    public static function sendNewIpNotificationEmail(string $userEmail, string $userName, string $ip): bool
+    {
+        $settings = self::getRecaptchaSettings();
+        $targetEmail = !empty($settings['pow_new_ip_email']) ? trim((string)$settings['pow_new_ip_email']) : $userEmail;
+
+        if ($targetEmail === '' || filter_var($targetEmail, FILTER_VALIDATE_EMAIL) === false) {
+            return false;
+        }
+
+        $siteTitle = 'Live Helper Chat';
+        if (class_exists('erConfigClassLhConfig')) {
+            $siteTitle = (string)\erConfigClassLhConfig::getInstance()->getSetting('site', 'title') ?: $siteTitle;
+        }
+
+        $dateStr = date('Y-m-d H:i:s T');
+        $userAgent = isset($_SERVER['HTTP_USER_AGENT']) ? (string)$_SERVER['HTTP_USER_AGENT'] : 'Unknown';
+
+        $subject = sprintf('[%s] Security Alert: Login from new IP address (%s)', $siteTitle, $userName);
+
+        $body = "Hello,\n\n" .
+            "A successful login to your Live Helper Chat account has been detected from a new IP address.\n\n" .
+            "Account: " . $userName . "\n" .
+            "IP Address: " . $ip . "\n" .
+            "Date & Time: " . $dateStr . "\n" .
+            "User Agent: " . $userAgent . "\n\n" .
+            "If this was you, you can safely ignore this notification.\n" .
+            "If you did NOT perform this login, please immediately change your password or contact your system administrator.\n\n" .
+            "--\n" . $siteTitle . " Security System";
+
+        return self::sendMail($targetEmail, $subject, $body);
+    }
+
+    public static function sendMail(string $toEmail, string $subject, string $body): bool
+    {
+        try {
+            if (class_exists('PHPMailer\\PHPMailer\\PHPMailer')) {
+                $mail = new \PHPMailer\PHPMailer\PHPMailer(true);
+                if (class_exists('erLhcoreClassChatMail') && method_exists('erLhcoreClassChatMail', 'setupSMTP')) {
+                    \erLhcoreClassChatMail::setupSMTP($mail);
+                }
+                $mail->CharSet = 'UTF-8';
+                $mail->Subject = $subject;
+                $mail->Body = $body;
+                $mail->AltBody = strip_tags($body);
+                $mail->addAddress($toEmail);
+                return (bool)$mail->send();
+            }
+
+            if (class_exists('PHPMailer')) {
+                $mail = new \PHPMailer(true);
+                if (class_exists('erLhcoreClassChatMail') && method_exists('erLhcoreClassChatMail', 'setupSMTP')) {
+                    \erLhcoreClassChatMail::setupSMTP($mail);
+                }
+                $mail->CharSet = 'UTF-8';
+                $mail->Subject = $subject;
+                $mail->Body = $body;
+                $mail->AltBody = strip_tags($body);
+                $mail->AddAddress($toEmail);
+                return (bool)$mail->Send();
+            }
+
+            $sender = 'no-reply@' . ($_SERVER['HTTP_HOST'] ?? 'localhost');
+            $headers = "From: " . $sender . "\r\n" .
+                       "Reply-To: " . $sender . "\r\n" .
+                       "Content-Type: text/plain; charset=UTF-8\r\n";
+
+            return @mail($toEmail, $subject, $body, $headers);
+        } catch (\Throwable $e) {
+            error_log('lhc_powcaptcha send_mail_failed: ' . $e->getMessage());
+            return false;
+        }
+    }
+
+    private static function readKnownIps(): array
+    {
+        try {
+            $stmt = \ezcDbInstance::get()->prepare('SELECT `value` FROM `lh_chat_config` WHERE `identifier` = :id');
+            $stmt->bindValue(':id', self::KNOWN_IPS_IDENTIFIER);
+            $stmt->execute();
+            $raw = $stmt->fetchColumn();
+
+            if (!is_string($raw) || $raw === '') {
+                return array();
+            }
+
+            $decoded = json_decode($raw, true);
+            return is_array($decoded) ? $decoded : array();
+        } catch (\Throwable $e) {
+            return array();
+        }
+    }
+
+    private static function writeKnownIps(array $known): void
+    {
+        try {
+            $json = json_encode($known);
+            if ($json === false) {
+                return;
+            }
+
+            $stmt = \ezcDbInstance::get()->prepare(
+                "INSERT INTO `lh_chat_config` (`identifier`, `value`, `type`, `explain`, `hidden`) VALUES (:id, :v, 0, '', 1) " .
+                "ON DUPLICATE KEY UPDATE `value` = :v2"
+            );
+            $stmt->bindValue(':id', self::KNOWN_IPS_IDENTIFIER);
+            $stmt->bindValue(':v', $json);
+            $stmt->bindValue(':v2', $json);
+            $stmt->execute();
+        } catch (\Throwable $e) {
+            error_log('lhc_powcaptcha write_known_ips_failed: ' . $e->getMessage());
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Attempt Log (stored in lh_chat_config, newest first)
+    // ------------------------------------------------------------------
+
+    public static function recordAttempt(string $action, bool $ok, string $reason, int $difficulty, string $extraUser = ''): void
     {
         try {
             if (!$ok && !in_array($reason, self::NO_PENALTY_REASONS, true)) {
@@ -509,7 +968,7 @@ class erLhcoreClassPowCaptcha
             $ip = self::getClientIp();
             $ip = (filter_var($ip, FILTER_VALIDATE_IP) !== false) ? $ip : '';
 
-            // Bound the DB writes a single IP can cause (the log is just a ring buffer).
+            // Bound the DB writes a single IP can cause
             if ($ip !== '' && self::isApcuAvailable() && function_exists('apcu_inc')) {
                 $rlKey = 'lhc_powcaptcha_lw_' . hash('sha256', $ip);
                 apcu_add($rlKey, 0, 60);
@@ -520,6 +979,9 @@ class erLhcoreClassPowCaptcha
             }
 
             $userAgent = isset($_SERVER['HTTP_USER_AGENT']) ? (string)$_SERVER['HTTP_USER_AGENT'] : '';
+            if ($extraUser !== '') {
+                $userAgent = '[' . substr($extraUser, 0, 24) . '] ' . $userAgent;
+            }
 
             $entry = array(
                 't' => time(),
@@ -549,9 +1011,6 @@ class erLhcoreClassPowCaptcha
         }
     }
 
-    /**
-     * @return array[] Entries with keys t, ip, a, ok, r, d, ua (all sanitised), newest first.
-     */
     public static function getAttemptLog(): array
     {
         try {
@@ -723,7 +1182,7 @@ class erLhcoreClassPowCaptcha
         return (isset($_SERVER['SERVER_PORT']) && (string)$_SERVER['SERVER_PORT'] === '443');
     }
 
-    private static function getClientIp(): string
+    public static function getClientIp(): string
     {
         if (class_exists('erLhcoreClassIPDetect')) {
             $ip = (string)erLhcoreClassIPDetect::getIP();
@@ -769,13 +1228,6 @@ class erLhcoreClassPowCaptcha
         return (string)base64_decode(strtr($data, '-_', '+/'));
     }
 
-    /**
-     * Log a security event to the PHP error log.
-     * IP is one-way hashed so real addresses are never written to logs.
-     *
-     * @param string $event   Short machine-readable event name (e.g. 'replay_detected').
-     * @param array  $context Optional key=>value pairs to append (values must be safe to log).
-     */
     private static function logSecurityEvent(string $event, array $context = []): void
     {
         $ip = self::getClientIp();

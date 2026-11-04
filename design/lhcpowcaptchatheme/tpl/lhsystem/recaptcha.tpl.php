@@ -65,13 +65,14 @@
         </p>
         <?php if (!erLhcoreClassPowCaptcha::isApcuAvailable()) : ?>
             <div class="alert alert-warning">
-                <?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','APCu is not available. PoW will still work, but per-IP challenge rate limiting, per-IP adaptive difficulty and cross-session replay detection are reduced to session-only protections.');?>
+                <?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','APCu is not available. PoW will still work, but per-IP challenge rate limiting and APCu cross-session replay detection are reduced to database/session protections.');?>
             </div>
         <?php endif; ?>
 
         <div class="form-group">
             <label><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Difficulty (12-22 leading zero bits)');?></label>
             <input type="number" min="12" max="22" step="1" class="form-control" name="pow_difficulty" value="<?php echo isset($rc_data['pow_difficulty']) ? (int)$rc_data['pow_difficulty'] : 18?>" />
+            <small class="form-text text-muted"><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Default: 18 bits (~262k hashes, ~0.2s in modern browser).');?></small>
         </div>
 
         <div class="form-group">
@@ -87,18 +88,46 @@
 
         <div class="form-group">
             <label><input type="checkbox" value="on" name="pow_honeypot" <?php (!isset($rc_data['pow_honeypot']) || $rc_data['pow_honeypot'] == 1) ? print 'checked="checked"' : ''?> /> <?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Honeypot field (hidden trap for bots)');?></label>
-            <small class="form-text text-muted"><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Adds an invisible field to the form. Humans never see it; bots that fill every field fail the captcha and count as a failure.');?></small>
+            <small class="form-text text-muted"><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Adds an invisible field to the form. Humans never see it; bots that fill every field fail the captcha.');?></small>
         </div>
 
         <div class="form-group">
-            <label><input type="checkbox" value="on" name="pow_adaptive" <?php (!isset($rc_data['pow_adaptive']) || $rc_data['pow_adaptive'] == 1) ? print 'checked="checked"' : ''?> /> <?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Increase difficulty after failed attempts');?></label>
-            <small class="form-text text-muted"><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Each failed captcha attempt in the last 15 minutes from the same IP (needs APCu) or session adds 1 bit (doubles the work), up to the maximum below.');?></small>
+            <label><input type="checkbox" value="on" name="pow_adaptive" <?php (!isset($rc_data['pow_adaptive']) || $rc_data['pow_adaptive'] == 1) ? print 'checked="checked"' : ''?> /> <?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Increase difficulty after failed captcha attempts');?></label>
+            <small class="form-text text-muted"><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Each failed captcha attempt in the last 15 minutes adds 1 bit.');?></small>
         </div>
 
         <div class="form-group">
             <label><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Maximum extra difficulty bits (0-8)');?></label>
             <input type="number" min="0" max="8" step="1" class="form-control" name="pow_adaptive_max_bonus" value="<?php echo isset($rc_data['pow_adaptive_max_bonus']) ? (int)$rc_data['pow_adaptive_max_bonus'] : 4?>" />
-            <small class="form-text text-muted"><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','The total (base + extra) is always capped at 22: above that a browser cannot solve the challenge within the TTL.');?></small>
+            <small class="form-text text-muted"><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','The total difficulty is always capped at 22 bits.');?></small>
+        </div>
+
+        <hr />
+        <h5 class="text-primary"><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Failed login protection (wrong credentials)');?></h5>
+
+        <div class="form-group">
+            <label><input type="checkbox" value="on" name="pow_cred_penalty" <?php (!isset($rc_data['pow_cred_penalty']) || $rc_data['pow_cred_penalty'] == 1) ? print 'checked="checked"' : ''?> /> <?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Increase captcha difficulty after failed login (wrong credentials)');?></label>
+            <small class="form-text text-muted"><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','When an operator login fails due to incorrect credentials, the captcha difficulty automatically increases for that IP address for at least 24 hours. Each failed attempt adds +1 bit (doubling the work).');?></small>
+        </div>
+
+        <div class="form-group">
+            <label><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','IP penalty duration (hours, 1-168)');?></label>
+            <input type="number" min="1" max="168" step="1" class="form-control" name="pow_cred_penalty_hours" value="<?php echo isset($rc_data['pow_cred_penalty_hours']) ? (int)$rc_data['pow_cred_penalty_hours'] : 24?>" />
+            <small class="form-text text-muted"><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Default: 24 hours. During this period, the IP must solve higher difficulty challenges.');?></small>
+        </div>
+
+        <hr />
+        <h5 class="text-primary"><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','New IP login security alerts');?></h5>
+
+        <div class="form-group">
+            <label><input type="checkbox" value="on" name="pow_new_ip_alert" <?php (!isset($rc_data['pow_new_ip_alert']) || $rc_data['pow_new_ip_alert'] == 1) ? print 'checked="checked"' : ''?> /> <?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Send email alert when an operator logs in from a new IP address');?></label>
+            <small class="form-text text-muted"><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Detects when an account signs in from an IP not previously associated with it and dispatches an immediate security alert email.');?></small>
+        </div>
+
+        <div class="form-group">
+            <label><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Notification recipient email (optional)');?></label>
+            <input type="email" class="form-control" name="pow_new_ip_email" value="<?php echo isset($rc_data['pow_new_ip_email']) ? htmlspecialchars($rc_data['pow_new_ip_email']) : ''?>" placeholder="admin@example.com" />
+            <small class="form-text text-muted"><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','If left blank, the alert is sent directly to the email of the operator whose account was accessed.');?></small>
         </div>
     </div>
 
@@ -122,9 +151,94 @@
 
 </form>
 
-<?php if ((isset($rc_data['provider']) && $rc_data['provider'] === 'pow') || !empty($pow_log)) : ?>
+<?php if ((isset($rc_data['provider']) && $rc_data['provider'] === 'pow') || !empty($limited_ips) || !empty($pow_log)) : ?>
 <hr />
 
+<!-- =========================================================================
+     Limited IPs Section (v1.4.3)
+     ========================================================================= -->
+<h2><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Limited IPs (Increased Captcha Difficulty)');?></h2>
+
+<?php if (isset($ip_removed)) : ?>
+    <div class="alert alert-success">
+        <?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','IP restriction removed for');?>: <b><?php echo htmlspecialchars($ip_removed)?></b>
+    </div>
+<?php endif; ?>
+
+<?php if (isset($all_ips_cleared) && $all_ips_cleared === true) : ?>
+    <div class="alert alert-success">
+        <?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','All IP restrictions have been cleared successfully.');?>
+    </div>
+<?php endif; ?>
+
+<p class="text-muted small">
+    <?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','List of IP addresses currently facing increased captcha difficulty due to failed login credentials. Penalties automatically expire after 24 hours or can be cleared manually below.');?>
+</p>
+
+<?php if (empty($limited_ips)) : ?>
+    <p class="text-muted"><i><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','No IPs are currently restricted.');?></i></p>
+<?php else : ?>
+    <p>
+        <span class="badge badge-warning bg-warning text-dark"><?php echo count($limited_ips)?> <?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','IP address(es) limited');?></span>
+    </p>
+
+    <div class="table-responsive">
+    <table class="table table-sm table-striped">
+        <thead>
+        <tr>
+            <th><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','IP Address');?></th>
+            <th><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Failed Logins');?></th>
+            <th><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Penalty');?></th>
+            <th><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Effective Difficulty');?></th>
+            <th><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Last Failure');?></th>
+            <th><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Expires In');?></th>
+            <th><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Attempted User');?></th>
+            <th><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Action');?></th>
+        </tr>
+        </thead>
+        <tbody>
+        <?php $now = time(); ?>
+        <?php foreach ($limited_ips as $limited) : ?>
+            <?php
+                $remainingSec = max(0, (int)$limited['expires_at'] - $now);
+                $remHours = intdiv($remainingSec, 3600);
+                $remMins = intdiv($remainingSec % 3600, 60);
+                $effDiff = erLhcoreClassPowCaptcha::getEffectiveDifficulty($rc_data, $limited['ip']);
+            ?>
+            <tr>
+                <td><code><?php echo htmlspecialchars($limited['ip'])?></code></td>
+                <td><span class="badge badge-danger bg-danger"><?php echo (int)$limited['count']?></span></td>
+                <td>+<?php echo (int)($limited['bonus'] ?? 1)?> bits</td>
+                <td><b><?php echo (int)$effDiff?> bits</b></td>
+                <td class="text-nowrap"><?php echo htmlspecialchars(date('Y-m-d H:i:s', $limited['last_at']))?></td>
+                <td class="text-nowrap"><?php echo sprintf('%02dh %02dm', $remHours, $remMins)?></td>
+                <td><small><?php echo htmlspecialchars($limited['user'] ?? '—')?></small></td>
+                <td>
+                    <form action="" method="post" style="display:inline;" ng-non-bindable onsubmit="return confirm('<?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Remove restriction for this IP?');?>');">
+                        <?php include(erLhcoreClassDesign::designtpl('lhkernel/csfr_token.tpl.php'));?>
+                        <input type="hidden" name="ip" value="<?php echo htmlspecialchars($limited['ip'])?>" />
+                        <button type="submit" name="RemoveIpRestriction" class="btn btn-outline-danger btn-xs btn-sm py-0 px-2" title="<?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Unblock IP');?>">
+                            ✕ <?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Unblock');?>
+                        </button>
+                    </form>
+                </td>
+            </tr>
+        <?php endforeach; ?>
+        </tbody>
+    </table>
+    </div>
+
+    <form action="" method="post" ng-non-bindable onsubmit="return confirm('<?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Clear all IP restrictions? All IPs will return to base difficulty.');?>');" class="mb-3">
+        <?php include(erLhcoreClassDesign::designtpl('lhkernel/csfr_token.tpl.php'));?>
+        <input type="submit" class="btn btn-warning btn-sm" name="ClearAllIpRestrictions" value="<?php echo htmlspecialchars(erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Clear all limited IPs'))?>" />
+    </form>
+<?php endif; ?>
+
+<hr />
+
+<!-- =========================================================================
+     Last Captcha Attempts Log Section
+     ========================================================================= -->
 <h2><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Last PoW captcha attempts');?></h2>
 
 <?php if (isset($log_cleared) && $log_cleared === true) : $msg = erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Attempt log cleared'); ?>
@@ -132,9 +246,9 @@
 <?php endif; ?>
 
 <p class="text-muted small">
-    <?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Shows the last 30 attempts (newest first). IP address and user agent are stored for security purposes only; use the button below to delete them.');?>
+    <?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Shows the last attempts (newest first) including bad credentials and security alert dispatches. IP address and user agent are stored for security purposes only; use the button below to delete them.');?>
     <?php if (isset($rc_data['pow_adaptive']) && (int)$rc_data['pow_adaptive'] === 1) : ?>
-        <?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Recent failures counted for your current IP/session:');?> <b><?php echo (int)$pow_failures_now?></b>
+        &bull; <?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Recent short-term failures for your current IP/session:');?> <b><?php echo (int)$pow_failures_now?></b>
     <?php endif; ?>
 </p>
 
@@ -156,13 +270,14 @@
             <th><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Result');?></th>
             <th><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Reason');?></th>
             <th><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Difficulty');?></th>
-            <th><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','User agent');?></th>
+            <th><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','User / Agent');?></th>
         </tr>
         </thead>
+        <tbody>
         <?php foreach ($pow_log as $powRow) : ?>
         <tr>
             <td class="text-nowrap"><?php echo htmlspecialchars(date('Y-m-d H:i:s', $powRow['t']))?></td>
-            <td><?php echo htmlspecialchars($powRow['ip'])?></td>
+            <td><code><?php echo htmlspecialchars($powRow['ip'])?></code></td>
             <td><?php echo htmlspecialchars($powRow['a'])?></td>
             <td>
                 <?php if ($powRow['ok'] === 1) : ?>
@@ -171,11 +286,20 @@
                     <span class="badge badge-danger bg-danger"><?php echo erTranslationClassLhTranslation::getInstance()->getTranslation('system/recaptcha','Failed');?></span>
                 <?php endif; ?>
             </td>
-            <td><?php echo htmlspecialchars($powRow['r'])?></td>
-            <td><?php echo (int)$powRow['d']?></td>
+            <td>
+                <?php if ($powRow['r'] === 'bad_credentials') : ?>
+                    <span class="badge badge-warning bg-warning text-dark">bad_credentials (login failed)</span>
+                <?php elseif ($powRow['r'] === 'new_ip_login_alert_sent') : ?>
+                    <span class="badge badge-info bg-info text-white">new_ip_alert_sent</span>
+                <?php else : ?>
+                    <code><?php echo htmlspecialchars($powRow['r'])?></code>
+                <?php endif; ?>
+            </td>
+            <td><b><?php echo (int)$powRow['d']?> bits</b></td>
             <td class="small"><?php echo htmlspecialchars($powRow['ua'])?></td>
         </tr>
         <?php endforeach; ?>
+        </tbody>
     </table>
     </div>
 

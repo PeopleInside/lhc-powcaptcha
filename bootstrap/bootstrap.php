@@ -9,6 +9,7 @@ class erLhcoreClassExtensionLhcpowcaptcha
     public function run()
     {
         $this->registerAutoload();
+        $this->registerEvents();
     }
 
     public function registerAutoload()
@@ -32,6 +33,19 @@ class erLhcoreClassExtensionLhcpowcaptcha
 
         if (isset($classesArray[$className])) {
             include_once $classesArray[$className];
+        }
+    }
+
+    public function registerEvents()
+    {
+        if (class_exists('erLhcoreClassChatEventDispatcher')) {
+            $dispatcher = \erLhcoreClassChatEventDispatcher::getInstance();
+
+            // Hook before authentication to detect when a login attempt starts
+            $dispatcher->listen('user.login_before_authenticate', array('erLhcoreClassPowCaptcha', 'onLoginBeforeAuthenticate'));
+
+            // Hook after successful authentication to record success & alert on new IP
+            $dispatcher->listen('user.login_after_success_authenticate', array('erLhcoreClassPowCaptcha', 'onLoginAfterSuccessAuthenticate'));
         }
     }
 }

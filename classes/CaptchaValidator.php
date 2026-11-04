@@ -33,6 +33,16 @@ class CaptchaValidator
             'secret_key' => '',
             'turnstile_site_key' => '',
             'turnstile_secret_key' => '',
+            'pow_difficulty' => 18,
+            'pow_ttl' => 180,
+            'pow_allowed_actions' => array('login_action', 'forgot_password_action'),
+            'pow_adaptive' => 1,
+            'pow_adaptive_max_bonus' => 4,
+            'pow_honeypot' => 1,
+            'pow_cred_penalty' => 1,
+            'pow_cred_penalty_hours' => 24,
+            'pow_new_ip_alert' => 1,
+            'pow_new_ip_email' => '',
         ), $recaptchaData);
 
         $normalizedData['enabled'] = (int)$normalizedData['enabled'];

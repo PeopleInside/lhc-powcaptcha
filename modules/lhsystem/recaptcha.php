@@ -40,6 +40,18 @@ if (isset($_POST['StoreRecaptchaSettings'])) {
         'pow_adaptive_max_bonus' => new ezcInputFormDefinitionElement(
             ezcInputFormDefinitionElement::OPTIONAL, 'int'
         ),
+        'pow_cred_penalty' => new ezcInputFormDefinitionElement(
+            ezcInputFormDefinitionElement::OPTIONAL, 'boolean'
+        ),
+        'pow_cred_penalty_hours' => new ezcInputFormDefinitionElement(
+            ezcInputFormDefinitionElement::OPTIONAL, 'int'
+        ),
+        'pow_new_ip_alert' => new ezcInputFormDefinitionElement(
+            ezcInputFormDefinitionElement::OPTIONAL, 'boolean'
+        ),
+        'pow_new_ip_email' => new ezcInputFormDefinitionElement(
+            ezcInputFormDefinitionElement::OPTIONAL, 'unsafe_raw'
+        ),
         'enabled' => new ezcInputFormDefinitionElement(
             ezcInputFormDefinitionElement::OPTIONAL, 'boolean'
         )
@@ -90,6 +102,13 @@ if (isset($_POST['StoreRecaptchaSettings'])) {
     $data['pow_adaptive'] = ($form->hasValidData('pow_adaptive') && $form->pow_adaptive == 1) ? 1 : 0;
     $data['pow_adaptive_max_bonus'] = ($form->hasValidData('pow_adaptive_max_bonus')) ? max(0, min(8, (int)$form->pow_adaptive_max_bonus)) : 4;
 
+    // v1.4.3: 24h credential penalty and new IP email alert
+    $data['pow_cred_penalty'] = ($form->hasValidData('pow_cred_penalty') && $form->pow_cred_penalty == 1) ? 1 : 0;
+    $data['pow_cred_penalty_hours'] = ($form->hasValidData('pow_cred_penalty_hours')) ? max(1, min(168, (int)$form->pow_cred_penalty_hours)) : 24;
+
+    $data['pow_new_ip_alert'] = ($form->hasValidData('pow_new_ip_alert') && $form->pow_new_ip_alert == 1) ? 1 : 0;
+    $data['pow_new_ip_email'] = ($form->hasValidData('pow_new_ip_email')) ? trim((string)$form->pow_new_ip_email) : '';
+
     if ($form->hasValidData('enabled') && $form->enabled == 1) {
         $data['enabled'] = 1;
     } else {
@@ -115,12 +134,40 @@ if (isset($_POST['ClearPowAttemptLog'])) {
     $tpl->set('log_cleared', true);
 }
 
+// v1.4.3: Remove individual IP from limited list
+if (isset($_POST['RemoveIpRestriction'])) {
+    if (!isset($_POST['csfr_token']) || !$currentUser->validateCSFRToken($_POST['csfr_token'])) {
+        erLhcoreClassModule::redirect('system/recaptcha');
+        exit;
+    }
+
+    $ipToRemove = isset($_POST['ip']) ? trim((string)$_POST['ip']) : '';
+    if ($ipToRemove !== '') {
+        erLhcoreClassPowCaptcha::removeIpPenalty($ipToRemove);
+        $tpl->set('ip_removed', $ipToRemove);
+    }
+}
+
+// v1.4.3: Clear all limited IPs
+if (isset($_POST['ClearAllIpRestrictions'])) {
+    if (!isset($_POST['csfr_token']) || !$currentUser->validateCSFRToken($_POST['csfr_token'])) {
+        erLhcoreClassModule::redirect('system/recaptcha');
+        exit;
+    }
+
+    erLhcoreClassPowCaptcha::clearAllIpPenalties();
+    $tpl->set('all_ips_cleared', true);
+}
+
 $tpl->set('rc_data', $data);
 $tpl->set('pow_log', erLhcoreClassPowCaptcha::getAttemptLog());
 $tpl->set('pow_failures_now', erLhcoreClassPowCaptcha::getRecentFailureCount());
+$tpl->set('limited_ips', erLhcoreClassPowCaptcha::getLimitedIpsList());
 
 $Result['content'] = $tpl->fetch();
-$Result['path'] = array(array('url' => erLhcoreClassDesign::baseurl('system/configuration'), 'title' => erTranslationClassLhTranslation::getInstance()->getTranslation('system/htmlcode', 'System configuration')),
-    array('title' => erTranslationClassLhTranslation::getInstance()->getTranslation('system/configuration', 'Captcha settings')));
+$Result['path'] = array(
+    array('url' => erLhcoreClassDesign::baseurl('system/configuration'), 'title' => erTranslationClassLhTranslation::getInstance()->getTranslation('system/htmlcode', 'System configuration')),
+    array('title' => erTranslationClassLhTranslation::getInstance()->getTranslation('system/configuration', 'Captcha settings'))
+);
 
 ?>

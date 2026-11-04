@@ -1,4 +1,4 @@
-# lhc-powcaptcha
+# lhc-powcaptcha (v1.4.3)
 
 A Live Helper Chat extension that adds a **local Proof-of-Work (PoW) captcha** option for:
 
@@ -17,36 +17,56 @@ When selected and enabled, LHC will:
 - Bind PoW challenges to current user session/context
 - Solve challenge client-side in browser (Web Crypto)
 - Verify PoW server-side before login/password-reminder processing
-- Reject replayed proofs (session-level replay protection)
+- Reject replayed proofs (session-level and APCu replay protection)
 - Rate-limit challenge generation requests server-side
 
-## Attempt log, adaptive difficulty and honeypot (1.5.0 / 1.5.1)
+---
+
+## What's New in Version 1.4.3
+
+### 1. 24-Hour Adaptive Escalation on Failed Login Credentials (`bad_credentials`)
+In previous versions, only captcha solving failures triggered difficulty escalation. In **1.4.3**, when a user enters **wrong login credentials** (incorrect username or password):
+- The extension intercepts the failed authentication lifecycle via native LHC event hooks (`user.login_before_authenticate` and `user.login_after_success_authenticate`).
+- The client IP is flagged and its captcha difficulty is escalated for **at least 24 hours** (configurable from 1 to 168 hours).
+- Each subsequent failed attempt adds **+1 bit** (doubling the computational work required) up to the safe browser ceiling of 22 bits.
+- Stored persistently in `lh_chat_config` (`powcaptcha_ip_penalties`) and cached in APCu, surviving cookie clearing and server restarts.
+
+### 2. Limited IPs Management List in Back Office (`site_admin/system/recaptcha`)
+A dedicated table now lists all IP addresses currently facing elevated difficulty:
+- **IP address** and **attempted username**
+- **Failed login count (24h)**
+- **Penalty bits (+N bits)** and **effective difficulty** (e.g., 20 bits)
+- **First failure** and **last failure timestamps**
+- **Time remaining until expiration** (e.g. `23h 48m`)
+- **Unblock Button ("✕ Sblocca")**: Allows administrators to immediately clear the penalty for a specific IP (with CSRF token protection).
+- **Clear All Button**: Instant reset of all restricted IPs back to base difficulty.
+
+### 3. Security Email Alert on Login from New IP Addresses
+An optional security notification system:
+- **Enabled/Disabled toggle** in `site_admin/system/recaptcha`.
+- When an operator successfully logs into Live Helper Chat from an IP address not previously seen for that account, a security email alert is automatically dispatched.
+- **Recipient option**: Can be sent directly to the operator's account email address, or overridden with a dedicated security/admin email address.
+- Email contains operator username, new IP address, exact date/time, and user agent.
+- Known IPs per user are stored in `lh_chat_config` (`powcaptcha_known_ips`), retaining the last 25 verified IPs per operator.
+
+### 4. Extended Attempt & Security Log
+- Logs all failed credential attempts (`bad_credentials`) with the required difficulty and username.
+- Logs new IP alert dispatch events (`new_ip_login_alert_sent`).
+- Includes one-click log clearance.
+
+---
+
+## Attempt log, adaptive difficulty and honeypot
 
 In `site_admin/system/recaptcha` (provider `Local PoW captcha`):
 
-- **Attempt log**: the last 30 captcha attempts (date, IP, action, OK/Failed, reason, difficulty, user agent), newest first,
-  with a **Clear log** button (POST + CSRF token). Stored in a hidden row of `lh_chat_config`
-  (`powcaptcha_attempt_log`, JSON). At most 20 log writes/minute per IP are stored (APCu); the rest are still counted
-  for difficulty purposes.
-- **Adaptive difficulty**: every failed attempt in the last 15 minutes from the same IP (APCu) or the same session adds
-  +1 bit (doubles the work), up to *Maximum extra difficulty bits* (default 4, so 18 -> 22). Challenges issued before
-  the failures are refused with `difficulty_too_low`, so "easy" challenges cannot be stockpiled and used later.
-  Expired challenges and `difficulty_too_low` themselves do not add penalties.
+- **Attempt log**: the last 50 captcha attempts (date, IP, action, OK/Failed, reason, difficulty, user agent / target user), newest first, with a **Clear log** button (POST + CSRF token). Stored in a hidden row of `lh_chat_config` (`powcaptcha_attempt_log`, JSON).
+- **Short-term adaptive difficulty**: every failed attempt in the last 15 minutes adds +1 bit.
+- **24-hour credential penalty**: failed login credentials add +1 bit for 24 hours.
+- **Difficulty Ceiling**: Difficulty is capped at **22 bits** (base and base + extra). Above that the in-browser solver cannot finish within the TTL (26 bits = ~67M hashes). A stored value above 22 is automatically reset to 18.
+- **Honeypot** (on by default): an invisible `contact_website` field in the form. If it contains anything the attempt fails immediately, is logged as `honeypot_triggered`, and counts as a penalty.
 
-Notes:
-
-- Only **captcha** failures count. A wrong password with a valid captcha is not visible to this extension.
-- Without APCu the escalation is per-session only (a client that drops cookies resets it).
-- IP and user agent are personal data: keep the log short-lived (use *Clear log*) and mention it in your privacy policy if needed.
-- Difficulty is capped at **22 bits** (base and base + extra). Above that the in-browser solver cannot finish within the TTL (26 bits = ~67M hashes). A stored value above 22 is automatically reset to 18.
-- **Honeypot** (on by default): an invisible `contact_website` field in the form. If it contains anything the attempt fails (even with a valid proof), is logged as `honeypot_triggered` and counts as a failure for adaptive difficulty. Disable it in the settings if a browser autofill ever fills it.
-- The `lhpowcaptcha/settings` fallback page was removed; use `system/recaptcha`.
-
-## Disclaimer
-
-This software is provided **"AS IS"**, without any warranty. While it has been tested and reasonable efforts are made to ensure security and reliability, no guarantees are provided. As an open project, anyone may contribute or report issues, but this does not imply endorsement or liability from the maintainers.
-
-**You use this software entirely at your own risk.** The authors and contributors are not liable for any damages, data loss, or unexpected behavior resulting from its use, modification, or distribution. Always review and test the code independently before deploying it in critical or production environments.
+---
 
 ## Installation
 1. Copy extension folder into LHC:
@@ -69,17 +89,18 @@ array(
 3. Clear cache from back office (or remove cache files manually if needed).
 
 4. Open:
-
 - `site_admin/system/recaptcha`
 
-5. Set:
-
+5. Configure:
 - **Enable** = checked
 - **Captcha provider** = `Local PoW captcha`
-- Choose `Difficulty` and `Challenge TTL`
-- Optional: set **Allowed captcha actions** (comma-separated), defaults to `login_action,forgot_password_action`
+- Set `Difficulty` (default `18`) and `Challenge TTL` (default `180`)
+- Verify **Increase captcha difficulty after failed login (wrong credentials)** is checked
+- Verify **Send email alert when an operator logs in from a new IP address** is configured as desired
 
 6. Save.
+
+---
 
 ## Extension structure used by LHC
 
@@ -87,9 +108,7 @@ Live Helper Chat loads extension template overrides from:
 
 - `extension/lhcpowcaptcha/design/lhcpowcaptchatheme/tpl/...`
 
-If templates are placed under `design/defaulttheme/...`, LHC will not load the PoW overrides from the extension.
-
-## Core page integration (important)
+## Core page integration
 
 This extension is designed to integrate directly into the core page:
 
@@ -98,63 +117,16 @@ This extension is designed to integrate directly into the core page:
 You do **not** need a separate extension settings page.
 Manage PoW only from: `site_admin/system/recaptcha`.
 
-## Troubleshooting when `Local PoW captcha` is not visible
-
-1. Confirm extension path in your real LHC installation:
-   - `lhc_web/extension/lhcpowcaptcha`
-2. Confirm extension is enabled in `lhc_web/settings/settings.ini.php`:
-   - `extensions => array('lhcpowcaptcha')`
-3. Clear Live Helper Chat cache from back office.
-4. Reset PHP OPcache (or restart PHP-FPM/Apache service).
-5. Check for conflicts:
-    - another extension overriding `modules/lhsystem/recaptcha.php`
-    - another extension/theme overriding `extension/lhcpowcaptcha/design/lhcpowcaptchatheme/tpl/lhsystem/recaptcha.tpl.php`
-6. Reopen `site_admin/system/recaptcha` and verify provider list contains:
-   - `Local PoW captcha`
-7. If provider is still missing, extension override is not active.
-   Re-check extension path/enablement and clear cache/OPcache again.
-
-If a hard override conflict cannot be resolved, resolve the override conflict before enabling PoW.
+---
 
 ## Recommended secure defaults
 
 - Difficulty: `18` (maximum allowed: `22`)
 - TTL: `180`
+- Failed login penalty: `Enabled`, `24 hours`
+- New IP login alert: `Enabled`
 
-If users report slow challenge solving on low-power devices, tune gradually:
-
-- start from `16-18` for balanced protection/performance
-- increase to `20-22` only when clients can absorb higher CPU cost
-
-## Rollback / emergency disable (if something breaks)
-
-### Fastest safe recovery
-
-1. Edit `lhc_web/settings/settings.ini.php`
-2. Remove or comment out extension `lhcpowcaptcha` from `extensions`
-3. Clear LHC cache
-4. Login page and forgot password revert to LHC core behavior
-
-### Keep extension enabled but disable PoW
-
-1. Go to `site_admin/system/recaptcha`
-2. Uncheck **Enable**
-3. Save
-
-Or switch provider back to `google` / `turnstile`.
-
-## Resume extension after recovery
-
-1. Re-add `lhcpowcaptcha` into `extensions` list
-2. Clear cache
-3. Reconfigure in `site_admin/system/recaptcha`
-4. Test login and forgot-password flows
-
-## Notes
-
-- This extension uses existing LHC recaptcha config storage with additional PoW keys.
-- PoW challenge signing uses LHC `site.secrethash` internally.
-- No third-party captcha service is required in PoW mode.
+---
 
 ## APCu requirement (recommended for production)
 
@@ -162,18 +134,9 @@ PoW works without APCu, but with reduced protections:
 
 - per-IP challenge rate limiting is not available (session limit still applies)
 - cross-session replay detection is not available (session replay detection still applies)
+- 24-hour IP penalties and known IPs use database storage (`lh_chat_config`) in both modes.
 
 The admin captcha page shows a warning when APCu is missing in PoW mode.
 
-## Secret rotation (`site.secrethash`)
-
-PoW challenge signatures and session/context binding are derived from `site.secrethash`.
-Rotating it invalidates all active PoW challenges immediately.
-
-Suggested rotation procedure:
-
-1. Schedule a low-traffic maintenance window.
-2. Change `site.secrethash` in Live Helper Chat configuration.
-3. Clear LHC cache and reset PHP OPcache.
-4. Ask users to refresh login/forgot-password pages if they see one failed attempt after rotation.
-5. Verify new challenges are issued and accepted.
+## License
+Apache License 2.0
