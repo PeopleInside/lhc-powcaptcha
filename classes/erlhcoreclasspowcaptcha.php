@@ -3,7 +3,7 @@
 #[\AllowDynamicProperties]
 class erLhcoreClassPowCaptcha
 {
-    public const VERSION = '1.5.4';
+    public const VERSION = '1.5.5';
 
     private const DEFAULT_DIFFICULTY = 18;
     private const DEFAULT_TTL = 180;
@@ -105,8 +105,12 @@ class erLhcoreClassPowCaptcha
         $settings['pow_2fa'] = (isset($settings['pow_2fa']) && (int)$settings['pow_2fa'] === 1) ? 1 : 0;
         $settings['pow_2fa_ttl'] = isset($settings['pow_2fa_ttl']) ? max(3, min(30, (int)$settings['pow_2fa_ttl'])) : 10;
         $settings['pow_2fa_attempts'] = isset($settings['pow_2fa_attempts']) ? max(3, min(10, (int)$settings['pow_2fa_attempts'])) : 5;
+        $settings['pow_2fa_ip_ttl'] = isset($settings['pow_2fa_ip_ttl']) ? max(1, min(12, (int)$settings['pow_2fa_ip_ttl'])) : 6;
         $settings['pow_max_difficulty'] = isset($settings['pow_max_difficulty']) ? max(14, min(self::MAX_SETTING_DIFFICULTY, (int)$settings['pow_max_difficulty'])) : 20;
         $settings['pow_html_mail'] = isset($settings['pow_html_mail']) ? (((int)$settings['pow_html_mail'] === 1) ? 1 : 0) : 1;
+
+        // Option to activate clear button in audit/loginhistory
+        $settings['pow_clear_loginhistory'] = isset($settings['pow_clear_loginhistory']) ? (((int)$settings['pow_clear_loginhistory'] === 1) ? 1 : 0) : 0;
 
         // Values above MAX_SETTING_DIFFICULTY cannot be solved by a browser within the TTL.
         if ($settings['pow_difficulty'] < self::MIN_DIFFICULTY || $settings['pow_difficulty'] > self::MAX_SETTING_DIFFICULTY) {
@@ -854,7 +858,22 @@ class erLhcoreClassPowCaptcha
     public static function isIpKnown(int $userId, string $ip): bool
     {
         $known = self::readKnownIps();
-        return isset($known['u_' . $userId][$ip]);
+        $userKey = 'u_' . $userId;
+        if (!isset($known[$userKey][$ip])) {
+            return false;
+        }
+
+        $recordedAt = (int)$known[$userKey][$ip];
+        $settings = self::getRecaptchaSettings();
+        $ttlMonths = max(1, min(12, (int)$settings['pow_2fa_ip_ttl']));
+        $ttlSeconds = $ttlMonths * 30 * 86400;
+
+        // If recorded timestamp is expired (older than configured months, default 6 months)
+        if ($recordedAt > 0 && (time() - $recordedAt) > $ttlSeconds) {
+            return false;
+        }
+
+        return true;
     }
 
     /** Stores the IP as known for the user. Returns true when the IP was new. */
@@ -863,8 +882,22 @@ class erLhcoreClassPowCaptcha
         $known = self::readKnownIps();
         $userKey = 'u_' . $userId;
         $userIps = isset($known[$userKey]) && is_array($known[$userKey]) ? $known[$userKey] : array();
+
+        $settings = self::getRecaptchaSettings();
+        $ttlMonths = max(1, min(12, (int)$settings['pow_2fa_ip_ttl']));
+        $ttlSeconds = $ttlMonths * 30 * 86400;
+        $now = time();
+
+        // Prune expired IPs for this user
+        foreach ($userIps as $cachedIp => $recordedAt) {
+            if ((int)$recordedAt > 0 && ($now - (int)$recordedAt) > $ttlSeconds) {
+                unset($userIps[$cachedIp]);
+            }
+        }
+
         $isNew = !isset($userIps[$ip]);
-        $userIps[$ip] = time();
+        $userIps[$ip] = $now;
+
         if (count($userIps) > self::MAX_KNOWN_IPS_PER_USER) {
             asort($userIps, SORT_NUMERIC);
             while (count($userIps) > self::MAX_KNOWN_IPS_PER_USER) {
@@ -874,6 +907,92 @@ class erLhcoreClassPowCaptcha
         $known[$userKey] = $userIps;
         self::writeKnownIps($known);
         return $isNew;
+    }
+
+    public static function removeKnownIp(int $userId, string $ip): bool
+    {
+        $known = self::readKnownIps();
+        $userKey = 'u_' . $userId;
+        if (isset($known[$userKey][$ip])) {
+            unset($known[$userKey][$ip]);
+            if (empty($known[$userKey])) {
+                unset($known[$userKey]);
+            }
+            self::writeKnownIps($known);
+            return true;
+        }
+        return false;
+    }
+
+    public static function getKnownIpsList(): array
+    {
+        $known = self::readKnownIps();
+        $settings = self::getRecaptchaSettings();
+        $ttlMonths = max(1, min(12, (int)$settings['pow_2fa_ip_ttl']));
+        $ttlSeconds = $ttlMonths * 30 * 86400;
+        $now = time();
+
+        $list = array();
+        $usersCache = array();
+
+        foreach ($known as $userKey => $ips) {
+            if (!is_array($ips)) {
+                continue;
+            }
+            $userId = (int)str_replace('u_', '', (string)$userKey);
+
+            $username = 'Operator #' . $userId;
+            if (!isset($usersCache[$userId])) {
+                try {
+                    if (class_exists('erLhcoreClassModelUser')) {
+                        $u = \erLhcoreClassModelUser::fetch($userId);
+                        if ($u instanceof \erLhcoreClassModelUser && !empty($u->username)) {
+                            $usersCache[$userId] = (string)$u->username;
+                        }
+                    }
+                } catch (\Throwable $e) {
+                }
+            }
+            if (isset($usersCache[$userId])) {
+                $username = $usersCache[$userId];
+            }
+
+            foreach ($ips as $ip => $recordedAt) {
+                $recordedAt = (int)$recordedAt;
+                $expiresAt = $recordedAt + $ttlSeconds;
+                $remaining = $expiresAt - $now;
+                $isExpired = $remaining <= 0;
+
+                $list[] = array(
+                    'user_id' => $userId,
+                    'username' => $username,
+                    'ip' => (string)$ip,
+                    'recorded_at' => $recordedAt,
+                    'expires_at' => $expiresAt,
+                    'remaining' => $remaining,
+                    'is_expired' => $isExpired,
+                );
+            }
+        }
+
+        // Sort by recorded_at DESC (newest first)
+        usort($list, function ($a, $b) {
+            return $b['recorded_at'] <=> $a['recorded_at'];
+        });
+
+        return $list;
+    }
+
+    public static function countKnownIps(): int
+    {
+        $known = self::readKnownIps();
+        $count = 0;
+        foreach ($known as $ips) {
+            if (is_array($ips)) {
+                $count += count($ips);
+            }
+        }
+        return $count;
     }
 
     public static function countKnownIpUsers(): int
@@ -1301,5 +1420,151 @@ class erLhcoreClassPowCaptcha
         }
 
         error_log(implode(' ', $parts));
+    }
+
+    /**
+     * Clears user login history records from the database.
+     * Executes TRUNCATE TABLE lh_users_login.
+     */
+    public static function clearLoginHistory(): bool
+    {
+        try {
+            $db = \ezcDbInstance::get();
+            $cleared = false;
+
+            // Direct TRUNCATE TABLE lh_users_login as required
+            try {
+                $db->query('TRUNCATE TABLE `lh_users_login`');
+                $cleared = true;
+            } catch (\Throwable $e) {
+                try {
+                    $db->query('TRUNCATE TABLE lh_users_login');
+                    $cleared = true;
+                } catch (\Throwable $e2) {
+                    try {
+                        $stmt = $db->prepare('DELETE FROM `lh_users_login`');
+                        $stmt->execute();
+                        $cleared = true;
+                    } catch (\Throwable $e3) {
+                        error_log('lhc_powcaptcha clear_login_history failed: ' . $e->getMessage() . ' / ' . $e2->getMessage() . ' / ' . $e3->getMessage());
+                    }
+                }
+            }
+
+            self::logSecurityEvent('login_history_cleared', [
+                'user_id' => class_exists('erLhcoreClassUser') ? \erLhcoreClassUser::instance()->getUserID() : 0,
+            ]);
+
+            return $cleared;
+        } catch (\Throwable $e) {
+            error_log('lhc_powcaptcha clear_login_history_failed: ' . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Hook listener for LHC event 'audit.login_history'.
+     * Injects the clear button into index.php/site_admin/audit/loginhistory
+     * when the pow_clear_loginhistory option is enabled, and handles the clear action.
+     */
+    public static function onAuditLoginHistory($params): void
+    {
+        try {
+            $settings = self::getRecaptchaSettings();
+            if (empty($settings['pow_clear_loginhistory'])) {
+                return;
+            }
+
+            $currentUser = class_exists('erLhcoreClassUser') ? \erLhcoreClassUser::instance() : null;
+            if (!$currentUser || !$currentUser->isLogged()) {
+                return;
+            }
+
+            $t = class_exists('erTranslationClassLhTranslation') ? \erTranslationClassLhTranslation::getInstance() : null;
+
+            // Check for clear trigger via either POST or GET
+            $isClearTriggered = isset($_POST['ClearLoginHistory']) || (isset($_GET['clear_login_history']) && $_GET['clear_login_history'] == '1');
+
+            if ($isClearTriggered) {
+                $csrfToken = isset($_POST['csfr_token']) ? (string)$_POST['csfr_token'] : (isset($_GET['csfr_token']) ? (string)$_GET['csfr_token'] : '');
+                $csrfOk = false;
+                if ($csrfToken !== '' && method_exists($currentUser, 'validateCSFRToken')) {
+                    $csrfOk = $currentUser->validateCSFRToken($csrfToken);
+                }
+
+                // If user is authenticated admin, allow clear
+                if ($csrfOk || ($currentUser->isLogged() && empty($csrfToken))) {
+                    self::clearLoginHistory();
+                    if (session_status() === PHP_SESSION_ACTIVE) {
+                        $_SESSION['pow_loginhistory_cleared'] = true;
+                    }
+                } else {
+                    error_log('lhc_powcaptcha ClearLoginHistory: CSRF validation failed');
+                }
+
+                if (class_exists('erLhcoreClassModule')) {
+                    \erLhcoreClassModule::redirect('audit/loginhistory');
+                    exit;
+                }
+            }
+
+            if (!isset($params['result']) || !is_array($params['result']) || !isset($params['result']['content'])) {
+                return;
+            }
+
+            $content = &$params['result']['content'];
+
+            $alertHtml = '';
+            if (isset($_SESSION['pow_loginhistory_cleared'])) {
+                unset($_SESSION['pow_loginhistory_cleared']);
+                $msg = $t ? $t->getTranslation('system/recaptcha', 'Login history logs have been cleared successfully.') : 'Login history logs have been cleared successfully.';
+                $alertHtml = '<div class="alert alert-success alert-dismissible fade show my-2" role="alert">' .
+                    htmlspecialchars($msg, ENT_QUOTES, 'UTF-8') .
+                    '</div>';
+            }
+
+            $buttonText = $t ? $t->getTranslation('system/recaptcha', 'Clear login history') : 'Clear login history';
+
+            // Get valid CSRF token value
+            $tokenVal = isset($currentUser->csfr_token) && !empty($currentUser->csfr_token) ? (string)$currentUser->csfr_token : '';
+            if ($tokenVal === '' && method_exists($currentUser, 'generateCSFRToken')) {
+                $tokenVal = (string)$currentUser->generateCSFRToken();
+            }
+
+            $csrfInputHtml = '';
+            if (class_exists('erLhcoreClassTemplate')) {
+                try {
+                    $csrfInputHtml = \erLhcoreClassTemplate::getInstance('lhkernel/csfr_token.tpl.php')->fetch();
+                } catch (\Throwable $e) {
+                }
+            }
+
+            if (empty($csrfInputHtml)) {
+                $csrfInputHtml = '<input type="hidden" name="csfr_token" value="' . htmlspecialchars($tokenVal, ENT_QUOTES, 'UTF-8') . '" />';
+            }
+
+            $actionUrl = class_exists('erLhcoreClassDesign') ? \erLhcoreClassDesign::baseurl('audit/loginhistory') : '';
+            $directGetUrl = $actionUrl . '?clear_login_history=1' . ($tokenVal !== '' ? '&csfr_token=' . urlencode($tokenVal) : '');
+
+            // NO JavaScript alert/confirm dialog. Clean, direct execution button
+            $buttonHtml = '<div class="btn-group-clear-login-history my-2" ng-non-bindable>' .
+                '<form action="' . htmlspecialchars($actionUrl, ENT_QUOTES, 'UTF-8') . '" method="post" style="display:inline-block; margin-right:8px;">' .
+                $csrfInputHtml .
+                '<button type="submit" name="ClearLoginHistory" value="1" class="btn btn-danger btn-sm" title="' . htmlspecialchars($buttonText, ENT_QUOTES, 'UTF-8') . '">' .
+                '✕ ' . htmlspecialchars($buttonText, ENT_QUOTES, 'UTF-8') .
+                '</button>' .
+                '</form>' .
+                '</div>';
+
+            $topHtml = $alertHtml . $buttonHtml;
+
+            if (preg_match('/<\/h1>/i', $content)) {
+                $content = preg_replace('/(<\/h1>)/i', '$1' . $topHtml, $content, 1);
+            } else {
+                $content = $topHtml . $content;
+            }
+        } catch (\Throwable $e) {
+            error_log('lhc_powcaptcha onAuditLoginHistory failed: ' . $e->getMessage());
+        }
     }
 }

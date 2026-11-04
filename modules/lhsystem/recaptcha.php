@@ -61,10 +61,16 @@ if (isset($_POST['StoreRecaptchaSettings'])) {
         'pow_2fa_attempts' => new ezcInputFormDefinitionElement(
             ezcInputFormDefinitionElement::OPTIONAL, 'int'
         ),
+        'pow_2fa_ip_ttl' => new ezcInputFormDefinitionElement(
+            ezcInputFormDefinitionElement::OPTIONAL, 'int'
+        ),
         'pow_max_difficulty' => new ezcInputFormDefinitionElement(
             ezcInputFormDefinitionElement::OPTIONAL, 'int'
         ),
         'pow_html_mail' => new ezcInputFormDefinitionElement(
+            ezcInputFormDefinitionElement::OPTIONAL, 'boolean'
+        ),
+        'pow_clear_loginhistory' => new ezcInputFormDefinitionElement(
             ezcInputFormDefinitionElement::OPTIONAL, 'boolean'
         ),
         'enabled' => new ezcInputFormDefinitionElement(
@@ -127,8 +133,10 @@ if (isset($_POST['StoreRecaptchaSettings'])) {
     $data['pow_2fa'] = ($form->hasValidData('pow_2fa') && $form->pow_2fa == 1) ? 1 : 0;
     $data['pow_2fa_ttl'] = ($form->hasValidData('pow_2fa_ttl')) ? max(3, min(30, (int)$form->pow_2fa_ttl)) : 10;
     $data['pow_2fa_attempts'] = ($form->hasValidData('pow_2fa_attempts')) ? max(3, min(10, (int)$form->pow_2fa_attempts)) : 5;
+    $data['pow_2fa_ip_ttl'] = ($form->hasValidData('pow_2fa_ip_ttl')) ? max(1, min(12, (int)$form->pow_2fa_ip_ttl)) : 6;
     $data['pow_max_difficulty'] = ($form->hasValidData('pow_max_difficulty')) ? max(14, min(22, (int)$form->pow_max_difficulty)) : 20;
     $data['pow_html_mail'] = ($form->hasValidData('pow_html_mail') && $form->pow_html_mail == 1) ? 1 : 0;
+    $data['pow_clear_loginhistory'] = ($form->hasValidData('pow_clear_loginhistory') && $form->pow_clear_loginhistory == 1) ? 1 : 0;
 
     if ($form->hasValidData('enabled') && $form->enabled == 1) {
         $data['enabled'] = 1;
@@ -180,6 +188,22 @@ if (isset($_POST['ClearAllIpRestrictions'])) {
     $tpl->set('all_ips_cleared', true);
 }
 
+// Remove individual known IP from 2FA recognized list
+if (isset($_POST['RemoveKnownIp'])) {
+    if (!isset($_POST['csfr_token']) || !$currentUser->validateCSFRToken($_POST['csfr_token'])) {
+        erLhcoreClassModule::redirect('system/recaptcha');
+        exit;
+    }
+
+    $userId = isset($_POST['user_id']) ? (int)$_POST['user_id'] : 0;
+    $ipToRemove = isset($_POST['ip']) ? trim((string)$_POST['ip']) : '';
+
+    if ($userId > 0 && $ipToRemove !== '') {
+        erLhcoreClassPowCaptcha::removeKnownIp($userId, $ipToRemove);
+        $tpl->set('known_ip_removed', $ipToRemove);
+    }
+}
+
 // v1.5.0: forget all known IPs (every operator gets the 2FA code again at next login)
 if (isset($_POST['ResetKnownIps'])) {
     if (!isset($_POST['csfr_token']) || !$currentUser->validateCSFRToken($_POST['csfr_token'])) {
@@ -191,7 +215,19 @@ if (isset($_POST['ResetKnownIps'])) {
     $tpl->set('known_ips_cleared', true);
 }
 
+if (isset($_POST['ClearLoginHistory'])) {
+    if (!isset($_POST['csfr_token']) || !$currentUser->validateCSFRToken($_POST['csfr_token'])) {
+        erLhcoreClassModule::redirect('system/recaptcha');
+        exit;
+    }
+
+    erLhcoreClassPowCaptcha::clearLoginHistory();
+    $tpl->set('loginhistory_cleared', true);
+}
+
 $tpl->set('known_ips_users', erLhcoreClassPowCaptcha::countKnownIpUsers());
+$tpl->set('known_ips_count', erLhcoreClassPowCaptcha::countKnownIps());
+$tpl->set('known_ips_list', erLhcoreClassPowCaptcha::getKnownIpsList());
 $tpl->set('rc_data', $data);
 $tpl->set('pow_log', erLhcoreClassPowCaptcha::getAttemptLog());
 $tpl->set('pow_failures_now', erLhcoreClassPowCaptcha::getRecentFailureCount());

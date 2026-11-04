@@ -43,6 +43,8 @@ class CaptchaValidator
             'pow_cred_penalty_hours' => 24,
             'pow_new_ip_alert' => 1,
             'pow_new_ip_email' => '',
+            'pow_clear_loginhistory' => 0,
+            'pow_2fa_ip_ttl' => 6,
         ), $recaptchaData);
 
         $normalizedData['enabled'] = (int)$normalizedData['enabled'];
